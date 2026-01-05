@@ -1,0 +1,1792 @@
+#include <emscripten/bind.h>
+#include <emscripten/val.h>
+#include <emscripten.h>
+#include <sqlite3.h>
+
+// WASMFS is only available when WASMFS=1 is set
+#ifdef __EMSCRIPTEN_WASM_WORKERS__
+// This is actually checked via WASMFS define
+#endif
+
+#include <lattice.hpp>
+#include <lattice/scheduler.hpp>
+#include <dynamic_object.hpp>
+#include <list.hpp>
+#include <lattice/sync.hpp>
+
+#include <sys/stat.h>
+
+using namespace emscripten;
+using namespace lattice;
+
+// Debug logging that works in SharedWorker by posting to BroadcastChannel
+EM_JS(void, debugLogToChannel, (const char* msg), {
+    // Post to the debug BroadcastChannel so main thread can see it
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            var channel = new BroadcastChannel('lattice-debug');
+            channel.postMessage({ type: 'log', msg: '[C++] ' + UTF8ToString(msg) });
+            channel.close();
+        } catch (e) {}
+    }
+    // Also log to console (will appear in SharedWorker's own console)
+    console.log('[C++]', UTF8ToString(msg));
+});
+
+// ============================================================================
+// Emscripten Scheduler - dispatches callbacks via the browser event loop
+// ============================================================================
+// This is critical for WASM - we need to dispatch observer callbacks through
+// the Emscripten event loop rather than calling them directly, to ensure
+// proper integration with JavaScript's single-threaded execution model.
+
+class emscripten_scheduler : public scheduler {
+public:
+    void invoke(std::function<void()>&& fn) override {
+        printf("[emscripten_scheduler] invoke called\n");
+        if (!fn) {
+            printf("[emscripten_scheduler] fn is null, returning\n");
+            return;
+        }
+
+        // Allocate the callback on the heap so it survives until async dispatch
+        auto* callback = new std::function<void()>(std::move(fn));
+        printf("[emscripten_scheduler] scheduling async call\n");
+
+        // Use emscripten_async_call to dispatch to the event loop
+        // The delay of 0 means "as soon as possible" in the next event loop tick
+        emscripten_async_call([](void* arg) {
+            printf("[emscripten_scheduler] async callback executing\n");
+            auto* cb = static_cast<std::function<void()>*>(arg);
+            if (*cb) (*cb)();
+            delete cb;
+            printf("[emscripten_scheduler] async callback done\n");
+        }, callback, 0);
+    }
+
+    [[nodiscard]] bool is_on_thread() const noexcept override {
+        return true;  // WASM is single-threaded
+    }
+
+    [[nodiscard]] bool is_same_as(const scheduler* other) const noexcept override {
+        return dynamic_cast<const emscripten_scheduler*>(other) != nullptr;
+    }
+
+    [[nodiscard]] bool can_invoke() const noexcept override {
+        return true;
+    }
+};
+
+// Global scheduler instance for WASM
+static std::shared_ptr<emscripten_scheduler> g_emscripten_scheduler = std::make_shared<emscripten_scheduler>();
+
+// ============================================================================
+// Browser WebSocket Client - wraps JS WebSocket for C++ sync
+// ============================================================================
+
+#include <lattice/network.hpp>
+
+class emscripten_websocket_client : public websocket_client {
+private:
+    val ws_ = val::null();
+    websocket_state state_ = websocket_state::closed;
+
+    on_open_handler on_open_;
+    on_message_handler on_message_;
+    on_error_handler on_error_;
+    on_close_handler on_close_;
+
+public:
+    emscripten_websocket_client() = default;
+    ~emscripten_websocket_client() override {
+        disconnect();
+    }
+
+    void connect(const std::string& url,
+                 const std::map<std::string, std::string>& headers = {}) override {
+        printf("[emscripten_ws] Connecting to: %s\n", url.c_str());
+
+        if (!ws_.isNull()) {
+            disconnect();
+        }
+
+        state_ = websocket_state::connecting;
+
+        // Browser WebSocket doesn't support custom headers
+        // Pass Authorization token as query parameter instead
+        std::string final_url = url;
+        auto auth_it = headers.find("Authorization");
+        if (auth_it != headers.end()) {
+            std::string token = auth_it->second;
+            // Strip "Bearer " prefix if present
+            if (token.rfind("Bearer ", 0) == 0) {
+                token = token.substr(7);
+            }
+            // Append as query param
+            if (final_url.find('?') != std::string::npos) {
+                final_url += "&token=" + token;
+            } else {
+                final_url += "?token=" + token;
+            }
+            printf("[emscripten_ws] Added token to URL as query param\n");
+        }
+
+        // Create WebSocket
+        val WebSocket = val::global("WebSocket");
+        ws_ = WebSocket.new_(final_url);
+
+        // Set binary type to arraybuffer
+        ws_.set("binaryType", val("arraybuffer"));
+
+        // Set up event handlers
+        auto* self = this;
+
+        ws_.set("onopen", val::module_property("_ws_onopen_handler"));
+        ws_.set("onmessage", val::module_property("_ws_onmessage_handler"));
+        ws_.set("onerror", val::module_property("_ws_onerror_handler"));
+        ws_.set("onclose", val::module_property("_ws_onclose_handler"));
+
+        // Store reference to this client for callbacks
+        ws_.set("_lattice_client", val(reinterpret_cast<uintptr_t>(this)));
+    }
+
+    void disconnect() override {
+        if (!ws_.isNull()) {
+            printf("[emscripten_ws] Disconnecting\n");
+            ws_.call<void>("close");
+            ws_ = val::null();
+        }
+        state_ = websocket_state::closed;
+    }
+
+    websocket_state state() const override {
+        return state_;
+    }
+
+    void send(const websocket_message& message) override {
+        if (ws_.isNull() || state_ != websocket_state::open) {
+            printf("[emscripten_ws] Cannot send - not connected\n");
+            return;
+        }
+
+        // Convert to ArrayBuffer and send
+        val Uint8Array = val::global("Uint8Array");
+        val buffer = Uint8Array.new_(val(message.data.size()));
+
+        // Copy data to JS array
+        val memory = val::module_property("HEAPU8");
+        for (size_t i = 0; i < message.data.size(); i++) {
+            buffer.set(i, val(message.data[i]));
+        }
+
+        ws_.call<void>("send", buffer);
+        printf("[emscripten_ws] Sent %zu bytes\n", message.data.size());
+    }
+
+    void set_on_open(on_open_handler handler) override { on_open_ = handler; }
+    void set_on_message(on_message_handler handler) override { on_message_ = handler; }
+    void set_on_error(on_error_handler handler) override { on_error_ = handler; }
+    void set_on_close(on_close_handler handler) override { on_close_ = handler; }
+
+    // Called from JS handlers
+    void handle_open() {
+        printf("[emscripten_ws] Connected!\n");
+        state_ = websocket_state::open;
+        if (on_open_) {
+            g_emscripten_scheduler->invoke([this]() { on_open_(); });
+        }
+    }
+
+    void handle_message(val event) {
+        val data = event["data"];
+
+        websocket_message msg;
+
+        if (data.instanceof(val::global("ArrayBuffer"))) {
+            // Binary message
+            val Uint8Array = val::global("Uint8Array");
+            val arr = Uint8Array.new_(data);
+            size_t len = arr["length"].as<size_t>();
+
+            msg.msg_type = websocket_message::type::binary;
+            msg.data.resize(len);
+            for (size_t i = 0; i < len; i++) {
+                msg.data[i] = arr[i].as<uint8_t>();
+            }
+            printf("[emscripten_ws] Received binary message: %zu bytes\n", len);
+        } else {
+            // Text message
+            std::string text = data.as<std::string>();
+            msg.msg_type = websocket_message::type::text;
+            msg.data = std::vector<uint8_t>(text.begin(), text.end());
+            printf("[emscripten_ws] Received text message: %zu chars\n", text.size());
+        }
+
+        if (on_message_) {
+            g_emscripten_scheduler->invoke([this, msg]() { on_message_(msg); });
+        }
+    }
+
+    void handle_error(val event) {
+        printf("[emscripten_ws] Error occurred\n");
+        if (on_error_) {
+            g_emscripten_scheduler->invoke([this]() { on_error_("WebSocket error"); });
+        }
+    }
+
+    void handle_close(val event) {
+        int code = event["code"].as<int>();
+        std::string reason = event["reason"].as<std::string>();
+        printf("[emscripten_ws] Closed: code=%d reason=%s\n", code, reason.c_str());
+
+        state_ = websocket_state::closed;
+        ws_ = val::null();
+
+        if (on_close_) {
+            g_emscripten_scheduler->invoke([this, code, reason]() { on_close_(code, reason); });
+        }
+    }
+};
+
+// Global map of active WebSocket clients for callback dispatch
+static std::map<uintptr_t, emscripten_websocket_client*> g_ws_clients;
+
+// JavaScript callback handlers - these are called from the WebSocket events
+EM_JS(void, setup_ws_handlers, (), {
+    Module._ws_onopen_handler = function(event) {
+        var client = this._lattice_client;
+        if (client) {
+            Module._ws_handle_open(client);
+        }
+    };
+    Module._ws_onmessage_handler = function(event) {
+        var client = this._lattice_client;
+        if (client) {
+            // Store event in global for C++ to access
+            Module._ws_pending_event = event;
+            Module._ws_handle_message(client);
+            Module._ws_pending_event = null;
+        }
+    };
+    Module._ws_onerror_handler = function(event) {
+        var client = this._lattice_client;
+        if (client) {
+            Module._ws_pending_event = event;
+            Module._ws_handle_error(client);
+            Module._ws_pending_event = null;
+        }
+    };
+    Module._ws_onclose_handler = function(event) {
+        var client = this._lattice_client;
+        if (client) {
+            Module._ws_pending_event = event;
+            Module._ws_handle_close(client);
+            Module._ws_pending_event = null;
+        }
+    };
+});
+
+extern "C" {
+    EMSCRIPTEN_KEEPALIVE void ws_handle_open(uintptr_t client_ptr) {
+        auto* client = reinterpret_cast<emscripten_websocket_client*>(client_ptr);
+        if (client) client->handle_open();
+    }
+
+    EMSCRIPTEN_KEEPALIVE void ws_handle_message(uintptr_t client_ptr) {
+        auto* client = reinterpret_cast<emscripten_websocket_client*>(client_ptr);
+        if (client) {
+            val event = val::module_property("_ws_pending_event");
+            client->handle_message(event);
+        }
+    }
+
+    EMSCRIPTEN_KEEPALIVE void ws_handle_error(uintptr_t client_ptr) {
+        auto* client = reinterpret_cast<emscripten_websocket_client*>(client_ptr);
+        if (client) {
+            val event = val::module_property("_ws_pending_event");
+            client->handle_error(event);
+        }
+    }
+
+    EMSCRIPTEN_KEEPALIVE void ws_handle_close(uintptr_t client_ptr) {
+        auto* client = reinterpret_cast<emscripten_websocket_client*>(client_ptr);
+        if (client) {
+            val event = val::module_property("_ws_pending_event");
+            client->handle_close(event);
+        }
+    }
+}
+
+// Network factory for browser environment
+class emscripten_network_factory : public network_factory {
+public:
+    std::unique_ptr<http_client> create_http_client() override {
+        // HTTP client not implemented yet - would use fetch()
+        return std::make_unique<null_http_client>();
+    }
+
+    std::unique_ptr<websocket_client> create_websocket_client() override {
+        printf("[emscripten_network_factory] Creating websocket client\n");
+        return std::make_unique<emscripten_websocket_client>();
+    }
+};
+
+// Initialize the network factory
+static bool g_network_factory_initialized = false;
+
+void init_emscripten_network() {
+    if (!g_network_factory_initialized) {
+        printf("[emscripten_network] Initializing network factory\n");
+        setup_ws_handlers();
+        auto factory = std::make_shared<emscripten_network_factory>();
+        printf("[emscripten_network] Created factory at %p\n", factory.get());
+        set_network_factory(factory);
+        g_network_factory_initialized = true;
+        printf("[emscripten_network] Factory set, verifying: %p\n", get_network_factory().get());
+    }
+}
+
+// ============================================================================
+// OPFS VFS Initialization (custom VFS using browser OPFS API)
+// ============================================================================
+
+#include <atomic>
+
+static std::atomic<bool> opfs_initialized{false};
+static std::atomic<bool> opfs_init_failed{false};
+
+#if defined(__EMSCRIPTEN__) && defined(LATTICE_OPFS_VFS)
+// Custom OPFS VFS - defined in opfs_vfs.cpp
+extern "C" {
+    int opfs_vfs_register(int makeDefault);
+    int opfs_vfs_available();
+}
+
+// Initialize OPFS VFS (synchronous, no pthreads needed)
+bool initOPFSSync() {
+    debugLogToChannel("initOPFSSync called");
+    if (opfs_initialized.load()) {
+        debugLogToChannel("Already initialized");
+        return true;
+    }
+
+    debugLogToChannel("Initializing custom OPFS VFS...");
+    printf("[OPFS] Initializing custom OPFS VFS...\n");
+
+    debugLogToChannel("Checking opfs_vfs_available...");
+    if (!opfs_vfs_available()) {
+        debugLogToChannel("OPFS not available in this context");
+        printf("[OPFS] OPFS not available in this context (not a Worker?)\n");
+        opfs_init_failed.store(true);
+        return false;
+    }
+    debugLogToChannel("OPFS is available, registering VFS...");
+
+    // Register OPFS as the default VFS
+    // Note: :memory: databases are handled specially by SQLite and don't use VFS for main file
+    int rc = opfs_vfs_register(1);  // Make OPFS the default VFS
+    char buf[64];
+    snprintf(buf, sizeof(buf), "opfs_vfs_register returned: %d", rc);
+    debugLogToChannel(buf);
+    if (rc != 0) {
+        debugLogToChannel("VFS registration failed!");
+        printf("[OPFS] Failed to register OPFS VFS: %d\n", rc);
+        opfs_init_failed.store(true);
+        return false;
+    }
+
+    debugLogToChannel("VFS registered successfully as default");
+    printf("[OPFS] OPFS VFS registered successfully\n");
+    opfs_initialized.store(true);
+    return true;
+}
+
+// Async init just calls sync init (no pthreads needed anymore)
+bool initOPFSAsync() {
+    return initOPFSSync();
+}
+
+// Check if OPFS is available
+bool isOPFSAvailable() {
+    return opfs_initialized.load();
+}
+
+#else
+// OPFS VFS not enabled
+bool initOPFSAsync() {
+    printf("[OPFS] OPFS VFS not enabled in build\n");
+    return false;
+}
+
+bool initOPFSSync() {
+    printf("[OPFS] OPFS VFS not enabled in build\n");
+    return false;
+}
+
+bool isOPFSAvailable() {
+    return false;
+}
+#endif
+
+// Check if OPFS initialization is still in progress (always false now - sync init)
+bool isOPFSInitInProgress() {
+    return false;
+}
+
+// Check if OPFS initialization failed
+bool isOPFSInitFailed() {
+    return opfs_init_failed.load();
+}
+
+// Forward declarations
+class JsLinkList;
+
+// ============================================================================
+// DynamicObjectRef wrapper for Embind
+// ============================================================================
+
+class JsDynamicObject {
+public:
+    JsDynamicObject() : ref_(nullptr) {}
+
+    explicit JsDynamicObject(dynamic_object_ref* ref) : ref_(ref) {
+        if (ref_) retainDynamicObjectRef(ref_);
+    }
+
+    ~JsDynamicObject() {
+        if (ref_) releaseDynamicObjectRef(ref_);
+    }
+
+    JsDynamicObject(const JsDynamicObject& other) : ref_(other.ref_) {
+        if (ref_) retainDynamicObjectRef(ref_);
+    }
+
+    JsDynamicObject& operator=(const JsDynamicObject& other) {
+        if (this != &other) {
+            if (ref_) releaseDynamicObjectRef(ref_);
+            ref_ = other.ref_;
+            if (ref_) retainDynamicObjectRef(ref_);
+        }
+        return *this;
+    }
+
+    bool isValid() const { return ref_ != nullptr; }
+
+    // Getters
+    int64_t getInt(const std::string& name) const {
+        return ref_ ? ref_->get_int(name) : 0;
+    }
+
+    std::string getString(const std::string& name) const {
+        printf("[JsDynamicObject::getString] name='%s', ref_=%p\n", name.c_str(), (void*)ref_);
+        if (!ref_) {
+            printf("[JsDynamicObject::getString] ref_ is null!\n");
+            return "";
+        }
+        auto result = ref_->get_string(name);
+        printf("[JsDynamicObject::getString] result='%s'\n", result.c_str());
+        return result;
+    }
+
+    double getDouble(const std::string& name) const {
+        return ref_ ? ref_->get_double(name) : 0.0;
+    }
+
+    bool getBool(const std::string& name) const {
+        return ref_ ? ref_->get_bool(name) : false;
+    }
+
+    bool hasValue(const std::string& name) const {
+        return ref_ ? ref_->has_value(name) : false;
+    }
+
+    // Setters
+    void setInt(const std::string& name, int64_t value) {
+        if (ref_) ref_->set_int(name, value);
+    }
+
+    void setString(const std::string& name, const std::string& value) {
+        if (ref_) ref_->set_string(name, value);
+    }
+
+    void setDouble(const std::string& name, double value) {
+        if (ref_) ref_->set_double(name, value);
+    }
+
+    void setBool(const std::string& name, bool value) {
+        if (ref_) ref_->set_bool(name, value);
+    }
+
+    void setNil(const std::string& name) {
+        if (ref_) ref_->set_nil(name);
+    }
+
+    // Link handling - the key methods!
+    JsDynamicObject getObject(const std::string& name) const {
+        printf("[JsDynamicObject::getObject] name='%s', ref_=%p\n", name.c_str(), (void*)ref_);
+        if (!ref_) return JsDynamicObject();
+
+        printf("[JsDynamicObject::getObject] parent id=%lld, is_managed=%d\n",
+               (long long)ref_->get_int("id"), ref_->is_managed() ? 1 : 0);
+
+        auto* linked = ref_->get_object(name);
+        printf("[JsDynamicObject::getObject] linked=%p\n", (void*)linked);
+
+        if (!linked) return JsDynamicObject();
+
+        printf("[JsDynamicObject::getObject] linked id=%lld, name='%s'\n",
+               (long long)linked->get_int("id"), linked->get_string("name").c_str());
+
+        // MUST retain before passing to constructor (same pattern as JsLinkList::at)
+        retainDynamicObjectRef(linked);
+        return JsDynamicObject(linked);
+    }
+
+    void setObject(const std::string& name, JsDynamicObject& value) {
+        printf("[JsDynamicObject::setObject] name='%s', ref_=%p, value.ref_=%p\n",
+               name.c_str(), (void*)ref_, (void*)value.ref_);
+        if (ref_ && value.ref_) {
+            printf("[JsDynamicObject::setObject] value id=%lld, value name='%s'\n",
+                   (long long)value.ref_->get_int("id"), value.ref_->get_string("name").c_str());
+            ref_->set_object(name, *value.ref_);
+            printf("[JsDynamicObject::setObject] done\n");
+        }
+    }
+
+    // Get a link list property - forward declaration, implemented after JsLinkList
+    JsLinkList getLinkList(const std::string& name) const;
+
+    dynamic_object_ref* raw() { return ref_; }
+
+private:
+    dynamic_object_ref* ref_;
+};
+
+// ============================================================================
+// JsLinkList - wrapper for link_list_ref
+// ============================================================================
+
+class JsLinkList {
+public:
+    JsLinkList() : ref_(nullptr), owned_(false) {}
+
+    // Take ownership of a link_list_ref* returned from get_link_list()
+    // get_link_list() returns a new pointer with ref_count=0, we retain it
+    explicit JsLinkList(link_list_ref* ref) : ref_(ref), owned_(true) {
+        if (ref_) {
+            retainLinkListRef(ref_);
+            printf("[JsLinkList] Created with ref=%p, retained\n", (void*)ref_);
+        }
+    }
+
+    ~JsLinkList() {
+        if (ref_ && owned_) {
+            printf("[JsLinkList] Destructor releasing ref=%p\n", (void*)ref_);
+            releaseLinkListRef(ref_);
+        }
+    }
+
+    // Copy constructor - share the ref
+    JsLinkList(const JsLinkList& other) : ref_(other.ref_), owned_(true) {
+        if (ref_) {
+            retainLinkListRef(ref_);
+            printf("[JsLinkList] Copy ctor, retained ref=%p\n", (void*)ref_);
+        }
+    }
+
+    // Move constructor - transfer ownership
+    JsLinkList(JsLinkList&& other) noexcept : ref_(other.ref_), owned_(other.owned_) {
+        other.ref_ = nullptr;
+        other.owned_ = false;
+        printf("[JsLinkList] Move ctor, took ref=%p\n", (void*)ref_);
+    }
+
+    JsLinkList& operator=(const JsLinkList& other) {
+        if (this != &other) {
+            if (ref_ && owned_) releaseLinkListRef(ref_);
+            ref_ = other.ref_;
+            owned_ = true;
+            if (ref_) retainLinkListRef(ref_);
+        }
+        return *this;
+    }
+
+    JsLinkList& operator=(JsLinkList&& other) noexcept {
+        if (this != &other) {
+            if (ref_ && owned_) releaseLinkListRef(ref_);
+            ref_ = other.ref_;
+            owned_ = other.owned_;
+            other.ref_ = nullptr;
+            other.owned_ = false;
+        }
+        return *this;
+    }
+
+    bool isValid() const { return ref_ != nullptr; }
+
+    size_t size() const {
+        return ref_ ? ref_->size() : 0;
+    }
+
+    bool empty() const {
+        return ref_ ? ref_->empty() : true;
+    }
+
+    // Get element at index as JsDynamicObject
+    JsDynamicObject at(size_t idx) const {
+        if (!ref_ || idx >= ref_->size()) return JsDynamicObject();
+        auto proxy = (*ref_)[idx];
+        if (!proxy.object) {
+            printf("[JsLinkList::at] proxy.object is null at idx %zu\n", idx);
+            return JsDynamicObject();
+        }
+
+        // Debug: check what's in the object
+        auto& dynObj = *proxy.object;
+        printf("[JsLinkList::at] idx=%zu, lattice=%p, name='%s'\n",
+               idx, dynObj.lattice, dynObj.get_string("name").c_str());
+
+        // Wrap the object in a dynamic_object_ref
+        auto* obj_ref = dynamic_object_ref::wrap(proxy.object);
+        retainDynamicObjectRef(obj_ref);
+        return JsDynamicObject(obj_ref);
+    }
+
+    // Append an object to the list
+    void push_back(JsDynamicObject& obj) {
+        if (ref_ && obj.raw()) {
+            auto* list = ref_->get();
+            auto* objRef = obj.raw();
+            printf("[JsLinkList::push_back] list->lattice=%p, obj is_managed=%d\n",
+                   (void*)list->lattice, objRef->is_managed() ? 1 : 0);
+            printf("[JsLinkList::push_back] obj id=%lld, global_id='%s'\n",
+                   (long long)objRef->get_int("id"), objRef->get_string("globalId").c_str());
+
+            size_t before_size = ref_->size();
+            ref_->push_back(obj.raw());
+            size_t after_size = ref_->size();
+            printf("[JsLinkList::push_back] before=%zu, after=%zu\n", before_size, after_size);
+        }
+    }
+
+    // Remove element at index
+    void erase(size_t idx) {
+        if (ref_ && idx < ref_->size()) {
+            ref_->erase(idx);
+        }
+    }
+
+    // Clear all elements
+    void clear() {
+        if (ref_) ref_->clear();
+    }
+
+    link_list_ref* raw() { return ref_; }
+
+private:
+    link_list_ref* ref_;
+    bool owned_;
+};
+
+// Implement JsDynamicObject::getLinkList now that JsLinkList is defined
+JsLinkList JsDynamicObject::getLinkList(const std::string& name) const {
+    if (!ref_) return JsLinkList();
+
+    // Debug: Check parent state before getting link list
+    printf("[JsDynamicObject::getLinkList] name='%s', parent is_managed=%d, parent id=%lld\n",
+           name.c_str(), ref_->is_managed() ? 1 : 0, (long long)ref_->get_int("id"));
+
+    auto* list_ref = ref_->get_link_list(name);
+    if (!list_ref) {
+        printf("[JsDynamicObject::getLinkList] list_ref is NULL!\n");
+        return JsLinkList();
+    }
+
+    // Debug: Check list state
+    auto* list = list_ref->get();
+    printf("[JsDynamicObject::getLinkList] list->lattice=%p, list size=%zu\n",
+           (void*)list->lattice, list_ref->size());
+
+    return JsLinkList(list_ref);
+}
+
+// ============================================================================
+// Helper: Convert JS object to property_descriptor
+// ============================================================================
+
+property_descriptor js_to_property_descriptor(const val& prop) {
+    property_descriptor desc;
+    desc.name = prop["name"].as<std::string>();
+
+    std::string type_str = prop["type"].as<std::string>();
+    if (type_str == "string") desc.type = column_type::text;
+    else if (type_str == "int" || type_str == "integer") desc.type = column_type::integer;
+    else if (type_str == "float" || type_str == "double" || type_str == "real") desc.type = column_type::real;
+    else if (type_str == "date") desc.type = column_type::real;  // Dates stored as Unix timestamps
+    else if (type_str == "bool" || type_str == "boolean") desc.type = column_type::integer;
+    else if (type_str == "blob" || type_str == "data") desc.type = column_type::blob;
+    else desc.type = column_type::text;
+
+    std::string kind_str = prop["kind"].isUndefined() ? "primitive" : prop["kind"].as<std::string>();
+    if (kind_str == "link") desc.kind = property_kind::link;
+    else if (kind_str == "list") desc.kind = property_kind::list;
+    else desc.kind = property_kind::primitive;
+
+    desc.target_table = prop["targetTable"].isUndefined() ? "" : prop["targetTable"].as<std::string>();
+    desc.nullable = prop["nullable"].isUndefined() ? true : prop["nullable"].as<bool>();
+    desc.is_vector = prop["isVector"].isUndefined() ? false : prop["isVector"].as<bool>();
+
+    return desc;
+}
+
+// ============================================================================
+// Helper: Convert JS schema array to SchemaVector
+// ============================================================================
+
+SchemaVector js_to_schema_vector(const val& schemas) {
+    SchemaVector result;
+
+    auto length = schemas["length"].as<size_t>();
+    for (size_t i = 0; i < length; i++) {
+        val schema = schemas[i];
+        swift_schema_entry entry;
+        entry.table_name = schema["tableName"].as<std::string>();
+
+        val props = schema["properties"];
+        auto props_length = props["length"].as<size_t>();
+        for (size_t j = 0; j < props_length; j++) {
+            auto desc = js_to_property_descriptor(props[j]);
+            entry.properties[desc.name] = desc;
+        }
+
+        result.push_back(entry);
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Helper: Convert JS object values to dynamic_object
+// ============================================================================
+
+void js_to_dynamic_object(dynamic_object_ref* obj, const val& js_obj,
+                          const SwiftSchema* schema, lattice::swift_lattice* db) {
+    // Note: table_name should already be set by dynamic_object_ref::create(table_name)
+
+    val keys = val::global("Object").call<val>("keys", js_obj);
+    auto length = keys["length"].as<size_t>();
+
+    for (size_t i = 0; i < length; i++) {
+        std::string key = keys[i].as<std::string>();
+        val value = js_obj[key];
+
+        printf("[js_to_dynamic_object] Setting %s, isNull=%d, isNumber=%d\n",
+               key.c_str(), value.isNull(), value.isNumber());
+
+        if (value.isNull() || value.isUndefined()) {
+            obj->set_nil(key);
+            continue;
+        }
+
+        // Check if this is a link property
+        if (schema && db) {
+            auto it = schema->find(key);
+            if (it != schema->end() && it->second.kind == property_kind::link) {
+                // This is a link property - we need to look up the linked object
+                if (value.isNumber()) {
+                    int64_t linked_id = static_cast<int64_t>(value.as<double>());
+                    printf("[js_to_dynamic_object] Link %s -> id %lld, target=%s\n",
+                           key.c_str(), linked_id, it->second.target_table.c_str());
+
+                    // Look up the linked object in the database
+                    auto linked_obj = db->object(linked_id, it->second.target_table);
+                    if (linked_obj) {
+                        printf("[js_to_dynamic_object] Found linked object, setting via set_object\n");
+                        // Create a dynamic_object_ref from the managed object
+                        dynamic_object_ref linked_ref(*linked_obj);
+                        obj->set_object(key, linked_ref);
+                    } else {
+                        printf("[js_to_dynamic_object] Linked object not found!\n");
+                        obj->set_nil(key);
+                    }
+                } else {
+                    printf("[js_to_dynamic_object] Link value is not a number, skipping\n");
+                    obj->set_nil(key);
+                }
+                continue;
+            }
+        }
+
+        // Regular (non-link) properties
+        if (value.isNumber()) {
+            // Check if it's an integer or float
+            double d = value.as<double>();
+            printf("[js_to_dynamic_object] %s = %f (int: %lld)\n", key.c_str(), d, static_cast<int64_t>(d));
+            if (d == static_cast<int64_t>(d)) {
+                obj->set_int(key, static_cast<int64_t>(d));
+            } else {
+                obj->set_double(key, d);
+            }
+        } else if (value.isString()) {
+            obj->set_string(key, value.as<std::string>());
+        } else if (value.typeOf().as<std::string>() == "boolean") {
+            obj->set_bool(key, value.as<bool>());
+        }
+        // TODO: Handle arrays, Uint8Array for blobs
+    }
+}
+
+// ============================================================================
+// Helper: Convert dynamic_object to JS object
+// ============================================================================
+
+// Forward declaration for recursive calls
+val dynamic_object_ref_to_js(dynamic_object_ref* obj, const SwiftSchema* schema);
+
+val dynamic_object_to_js(dynamic_object_ref* obj, const SwiftSchema* schema) {
+    val result = val::object();
+
+    if (!schema) return result;
+
+    for (const auto& [name, prop] : *schema) {
+        // Handle link properties - use getObject to get the actual linked object
+        if (prop.kind == property_kind::link) {
+            if (!obj->has_value(name)) {
+                result.set(name, val::null());
+            } else {
+                // Get the linked object directly using C++ mechanism
+                try {
+                    auto* linked_ref = obj->get_object(name);
+                    if (!linked_ref) {
+                        // Fallback: return the ID
+                        result.set(name, obj->get_int(name));
+                    } else {
+                        int64_t linked_id = linked_ref->get_int("id");
+                        if (linked_id == 0) {
+                            result.set(name, val::null());
+                            releaseDynamicObjectRef(linked_ref);
+                        } else {
+                            // Convert the linked object to JS
+                            auto* linked_schema = linked_ref->lattice_ref()->get()->get_properties_for_table(prop.target_table);
+                            val linked_js = dynamic_object_ref_to_js(linked_ref, linked_schema);
+                            linked_js.set("id", linked_id);
+                            linked_js.set("globalId", linked_ref->get_string("globalId"));
+                            result.set(name, linked_js);
+                            releaseDynamicObjectRef(linked_ref);
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    // Fallback to returning the ID if getObject fails
+                    printf("getObject failed for %s: %s\n", name.c_str(), e.what());
+                    result.set(name, obj->get_int(name));
+                } catch (...) {
+                    printf("getObject failed for %s: unknown error\n", name.c_str());
+                    result.set(name, obj->get_int(name));
+                }
+            }
+            continue;
+        }
+
+        // Skip list properties for now - they're in junction tables
+        if (prop.kind == property_kind::list) {
+            continue;
+        }
+
+        if (!obj->has_value(name)) {
+            result.set(name, val::null());
+            continue;
+        }
+
+        switch (prop.type) {
+            case column_type::integer:
+                result.set(name, obj->get_int(name));
+                break;
+            case column_type::real:
+                result.set(name, obj->get_double(name));
+                break;
+            case column_type::text:
+                result.set(name, obj->get_string(name));
+                break;
+            case column_type::blob: {
+                auto data = obj->get_data(name);
+                // Convert to Uint8Array
+                val uint8_array = val::global("Uint8Array").new_(data.size());
+                for (size_t i = 0; i < data.size(); i++) {
+                    uint8_array.set(i, data[i]);
+                }
+                result.set(name, uint8_array);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    return result;
+}
+
+// Version that handles nested links (calls dynamic_object_to_js for recursion)
+val dynamic_object_ref_to_js(dynamic_object_ref* obj, const SwiftSchema* schema) {
+    // Just delegate to the main function which handles everything
+    return dynamic_object_to_js(obj, schema);
+}
+
+// ============================================================================
+// JS Wrapper for swift_lattice
+// ============================================================================
+
+// Helper to throw JS Error from C++ exception
+void throw_js_error(const std::string& msg) {
+    val error = val::global("Error").new_(msg);
+    throw error;
+}
+
+class JsLattice {
+public:
+    // Constructor without sync
+    JsLattice(const std::string& path, const val& schemas)
+        : JsLattice(path, schemas, "", "") {}
+
+    // Constructor with sync configuration
+    JsLattice(const std::string& path, const val& schemas,
+              const std::string& websocket_url, const std::string& auth_token) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "JsLattice constructor called, path: %s", path.c_str());
+        debugLogToChannel(buf);
+        try {
+            // Initialize network factory for browser WebSocket support
+            if (!websocket_url.empty()) {
+                init_emscripten_network();
+            }
+
+            debugLogToChannel("Creating configuration...");
+            // Use the Emscripten scheduler for proper event loop integration
+            configuration config(path, g_emscripten_scheduler);
+
+            // Add sync configuration if provided
+            if (!websocket_url.empty()) {
+                config.websocket_url = websocket_url;
+                config.authorization_token = auth_token;
+                printf("[JsLattice] Sync enabled: url=%s token_len=%zu\n", websocket_url.c_str(), auth_token.length());
+                printf("[JsLattice] is_sync_enabled=%d\n", config.is_sync_enabled() ? 1 : 0);
+            }
+
+            debugLogToChannel("Converting schemas...");
+            auto schema_vec = js_to_schema_vector(schemas);
+            snprintf(buf, sizeof(buf), "Schemas converted, count: %d", (int)schema_vec.size());
+            debugLogToChannel(buf);
+
+            // Debug: check factory before and after
+            printf("[JsLattice] Factory before create: %p\n", get_network_factory().get());
+
+            debugLogToChannel("Calling swift_lattice_ref::create...");
+            ref_ = swift_lattice_ref::create(config, schema_vec);
+            debugLogToChannel("swift_lattice_ref::create succeeded!");
+            printf("[JsLattice] Created with emscripten_scheduler, path=%s\n", path.c_str());
+
+            // Debug: check factory after create
+            printf("[JsLattice] Factory after create: %p\n", get_network_factory().get());
+            printf("[JsLattice] is_sync_connected=%d\n", ref_->get()->is_sync_connected() ? 1 : 0);
+        } catch (const std::exception& e) {
+            snprintf(buf, sizeof(buf), "std::exception: %s", e.what());
+            debugLogToChannel(buf);
+            throw_js_error(std::string("Failed to open database: ") + e.what());
+        } catch (...) {
+            debugLogToChannel("Unknown exception caught!");
+            throw_js_error("Failed to open database: unknown error");
+        }
+    }
+
+    ~JsLattice() {
+        if (ref_) {
+            releaseSwiftLatticeRef(ref_);
+        }
+    }
+
+    // Add an object to a table, returns the new object's ID
+    int64_t add(const std::string& table_name, const val& js_obj) {
+        try {
+            // Get the schema for this table from the database
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+            if (!schema) {
+                throw_js_error("Unknown table: " + table_name);
+                return -1;
+            }
+
+            // Create swift_dynamic_object with table name AND properties (like Swift does)
+            swift_dynamic_object unmanaged_obj(table_name, *schema);
+
+            // Wrap in dynamic_object_ref using constructor from swift_dynamic_object
+            auto* obj_ref = new dynamic_object_ref(unmanaged_obj);
+            retainDynamicObjectRef(obj_ref);
+
+            // Pass schema and lattice so links can be resolved properly
+            js_to_dynamic_object(obj_ref, js_obj, schema, ref_->get());
+
+            ref_->get()->add(*obj_ref->get());
+
+            int64_t id = obj_ref->get_int("id");
+            releaseDynamicObjectRef(obj_ref);
+            return id;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("add failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("add failed: unknown error");
+        }
+        return -1;
+    }
+
+    // Find object by primary key
+    val find(const std::string& table_name, int64_t id) {
+        try {
+            auto result = ref_->get()->object(id, table_name);
+            if (!result) {
+                return val::null();
+            }
+
+            auto* obj_ref = new dynamic_object_ref(*result);
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+            val js_obj = dynamic_object_to_js(obj_ref, schema);
+            js_obj.set("id", result->id());
+            js_obj.set("globalId", result->global_id());
+            delete obj_ref;
+            return js_obj;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("find failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("find failed: unknown error");
+        }
+        return val::null();
+    }
+
+    // Find object by global ID
+    val findByGlobalId(const std::string& table_name, const std::string& global_id) {
+        try {
+            auto result = ref_->get()->object_by_global_id(global_id, table_name);
+            if (!result) {
+                return val::null();
+            }
+
+            auto* obj_ref = new dynamic_object_ref(*result);
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+            val js_obj = dynamic_object_to_js(obj_ref, schema);
+            js_obj.set("id", result->id());
+            js_obj.set("globalId", result->global_id());
+            delete obj_ref;
+            return js_obj;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("findByGlobalId failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("findByGlobalId failed: unknown error");
+        }
+        return val::null();
+    }
+
+    // Query objects from a table
+    val objects(const std::string& table_name,
+                const val& where_clause,
+                const val& order_by,
+                const val& limit,
+                const val& offset) {
+        try {
+            OptionalString where = where_clause.isNull() || where_clause.isUndefined()
+                ? std::nullopt : std::optional<std::string>(where_clause.as<std::string>());
+            OptionalString order = order_by.isNull() || order_by.isUndefined()
+                ? std::nullopt : std::optional<std::string>(order_by.as<std::string>());
+            OptionalInt64 lim = limit.isNull() || limit.isUndefined()
+                ? std::nullopt : std::optional<int64_t>(limit.as<int64_t>());
+            OptionalInt64 off = offset.isNull() || offset.isUndefined()
+                ? std::nullopt : std::optional<int64_t>(offset.as<int64_t>());
+
+            auto results = ref_->get()->objects(table_name, where, order, lim, off);
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+
+            val arr = val::array();
+            for (size_t i = 0; i < results.size(); i++) {
+                auto* obj_ref = new dynamic_object_ref(results[i]);
+                val js_obj = dynamic_object_to_js(obj_ref, schema);
+                js_obj.set("id", results[i].id());
+                js_obj.set("globalId", results[i].global_id());
+                arr.call<void>("push", js_obj);
+                delete obj_ref;
+            }
+            return arr;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("objects query failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("objects query failed: unknown error");
+        }
+        return val::array();
+    }
+
+    // Count objects in a table
+    size_t count(const std::string& table_name, const val& where_clause) {
+        try {
+            OptionalString where = where_clause.isNull() || where_clause.isUndefined()
+                ? std::nullopt : std::optional<std::string>(where_clause.as<std::string>());
+            return ref_->get()->count(table_name, where);
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("count failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("count failed: unknown error");
+        }
+        return 0;
+    }
+
+    // Remove object by ID
+    bool remove(const std::string& table_name, int64_t id) {
+        try {
+            printf("[JsLattice::remove] table=%s id=%lld\n", table_name.c_str(), (long long)id);
+            auto result = ref_->get()->object(id, table_name);
+            if (!result) {
+                printf("[JsLattice::remove] Object not found!\n");
+                return false;
+            }
+            printf("[JsLattice::remove] Found object, calling remove...\n");
+            bool success = ref_->get()->remove(*result);
+            printf("[JsLattice::remove] remove returned: %d\n", success ? 1 : 0);
+            return success;
+        } catch (const std::exception& e) {
+            printf("[JsLattice::remove] Exception: %s\n", e.what());
+            throw_js_error(std::string("remove failed: ") + e.what());
+        } catch (...) {
+            printf("[JsLattice::remove] Unknown exception\n");
+            throw_js_error("remove failed: unknown error");
+        }
+        return false;
+    }
+
+    // Transaction control
+    void beginWrite() {
+        try {
+            ref_->get()->begin_transaction();
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("beginWrite failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("beginWrite failed: unknown error");
+        }
+    }
+
+    void commitWrite() {
+        try {
+            ref_->get()->commit();
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("commitWrite failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("commitWrite failed: unknown error");
+        }
+    }
+
+    // Path getter
+    std::string path() const {
+        return ref_->get()->path();
+    }
+
+    // Debug: Query a table directly and return count
+    int debugQueryCount(const std::string& sql) {
+        try {
+            auto rows = ref_->get()->read_db().query(sql, {});
+            printf("[debugQueryCount] SQL: %s\nResult: %zu rows\n", sql.c_str(), rows.size());
+            if (!rows.empty()) {
+                for (const auto& row : rows) {
+                    for (const auto& [k, v] : row) {
+                        if (std::holds_alternative<std::string>(v)) {
+                            printf("  %s = '%s'\n", k.c_str(), std::get<std::string>(v).c_str());
+                        } else if (std::holds_alternative<int64_t>(v)) {
+                            printf("  %s = %lld\n", k.c_str(), (long long)std::get<int64_t>(v));
+                        } else if (std::holds_alternative<double>(v)) {
+                            printf("  %s = %f\n", k.c_str(), std::get<double>(v));
+                        }
+                    }
+                }
+            }
+            return static_cast<int>(rows.size());
+        } catch (const std::exception& e) {
+            printf("[debugQueryCount] Error: %s\n", e.what());
+            return -1;
+        }
+    }
+
+    // Debug: List all tables
+    std::string debugListTables() {
+        try {
+            auto rows = ref_->get()->read_db().query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", {});
+            std::string result;
+            for (const auto& row : rows) {
+                auto it = row.find("name");
+                if (it != row.end() && std::holds_alternative<std::string>(it->second)) {
+                    result += std::get<std::string>(it->second) + "\n";
+                }
+            }
+            printf("[debugListTables] Tables:\n%s", result.c_str());
+            return result;
+        } catch (const std::exception& e) {
+            printf("[debugListTables] Error: %s\n", e.what());
+            return "";
+        }
+    }
+
+    // Create an unmanaged dynamic object for a table (used before add)
+    JsDynamicObject createObject(const std::string& table_name) {
+        try {
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+            if (!schema) {
+                throw_js_error("Unknown table: " + table_name);
+                return JsDynamicObject();
+            }
+
+            // Create swift_dynamic_object with table name AND properties
+            swift_dynamic_object unmanaged_obj(table_name, *schema);
+
+            // Wrap in dynamic_object_ref
+            auto* obj_ref = new dynamic_object_ref(unmanaged_obj);
+            retainDynamicObjectRef(obj_ref);
+
+            return JsDynamicObject(obj_ref);
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("createObject failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("createObject failed: unknown error");
+        }
+        return JsDynamicObject();
+    }
+
+    // Add a JsDynamicObject to the database
+    JsDynamicObject addObject(const std::string& table_name, JsDynamicObject& obj) {
+        try {
+            printf("[addObject] Adding to table: %s\n", table_name.c_str());
+            if (!obj.isValid()) {
+                throw_js_error("Cannot add invalid object");
+                return JsDynamicObject();
+            }
+
+            // Add to database
+            ref_->get()->add(*obj.raw()->get());
+
+            // The object is now managed - return it with the id set
+            return obj;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("addObject failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("addObject failed: unknown error");
+        }
+        return JsDynamicObject();
+    }
+
+    // Find object by ID and return as JsDynamicObject
+    JsDynamicObject findObject(const std::string& table_name, int64_t id) {
+        try {
+            auto result = ref_->get()->object(id, table_name);
+            if (!result) {
+                return JsDynamicObject();
+            }
+
+            // Create a dynamic_object_ref from the managed object
+            auto* obj_ref = new dynamic_object_ref(*result);
+            retainDynamicObjectRef(obj_ref);
+
+            return JsDynamicObject(obj_ref);
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("findObject failed: ") + e.what());
+        } catch (...) {
+            throw_js_error("findObject failed: unknown error");
+        }
+        return JsDynamicObject();
+    }
+
+    // ========================================================================
+    // Audit Log / Sync Methods
+    // ========================================================================
+
+    // Get all audit log entries as JSON (for initial sync to new tabs)
+    // Uses only_unsynced=false to include entries received from other tabs
+    std::string getPendingAuditLog() {
+        try {
+            // Return ALL entries, not just unsynced, so new tabs can get data
+            // that was received from other tabs (which are marked isFromRemote=1)
+            auto entries = query_audit_log(ref_->get()->db(), false, std::nullopt);
+
+            // Build JSON array
+            std::string json = "[";
+            for (size_t i = 0; i < entries.size(); i++) {
+                if (i > 0) json += ",";
+                json += entries[i].to_json();
+            }
+            json += "]";
+
+            return json;
+        } catch (const std::exception& e) {
+            printf("[getPendingAuditLog] Error: %s\n", e.what());
+            return "[]";
+        }
+    }
+
+    // Apply remote changes from JSON (audit log entries)
+    // Returns JSON array of global IDs that were applied
+    std::string applyRemoteChanges(const std::string& json) {
+        try {
+            // Parse JSON array of audit log entries
+            auto j = nlohmann::json::parse(json);
+            if (!j.is_array()) {
+                printf("[applyRemoteChanges] Expected JSON array\n");
+                return "[]";
+            }
+
+            std::vector<std::string> applied_ids;
+            std::vector<audit_log_entry> entries_to_record;
+
+            // Disable sync triggers while applying remote changes
+            // (we'll manually insert AuditLog entries with isFromRemote=1)
+            ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 1 WHERE id = 1");
+
+            for (const auto& entry_json : j) {
+                auto entry = audit_log_entry::from_json(entry_json.dump());
+                if (!entry) {
+                    printf("[applyRemoteChanges] Failed to parse entry\n");
+                    continue;
+                }
+
+                // Get schema for table to handle BLOB columns
+                const auto* props = ref_->get()->get_properties_for_table(entry->table_name);
+                std::unordered_map<std::string, column_type> schema;
+                if (props) {
+                    for (const auto& [name, desc] : *props) {
+                        schema[name] = desc.type;
+                    }
+                }
+
+                // Generate and execute the SQL instruction
+                auto [sql, params] = entry->generate_instruction(schema);
+                if (!sql.empty()) {
+                    try {
+                        ref_->get()->db().execute(sql, params);
+                        applied_ids.push_back(entry->global_id);
+                        entries_to_record.push_back(*entry);
+                        printf("[applyRemoteChanges] Applied: %s %s\n",
+                               entry->operation.c_str(), entry->table_name.c_str());
+                    } catch (const std::exception& e) {
+                        printf("[applyRemoteChanges] SQL failed: %s\n", e.what());
+                    }
+                }
+            }
+
+            // Re-enable sync triggers
+            ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 0 WHERE id = 1");
+
+            // Now manually insert AuditLog entries for applied changes
+            // Mark them as isFromRemote=1 so we don't re-broadcast them
+            for (const auto& entry : entries_to_record) {
+                try {
+                    ref_->get()->db().execute(
+                        "INSERT OR REPLACE INTO AuditLog "
+                        "(globalId, tableName, operation, rowId, globalRowId, changedFields, changedFieldsNames, timestamp, isFromRemote, isSynchronized) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)",
+                        {
+                            entry.global_id,
+                            entry.table_name,
+                            entry.operation,
+                            entry.row_id,
+                            entry.global_row_id,
+                            entry.changed_fields_to_json(),
+                            entry.changed_fields_names_to_json(),
+                            entry.timestamp
+                        }
+                    );
+                } catch (const std::exception& e) {
+                    printf("[applyRemoteChanges] Failed to record AuditLog entry: %s\n", e.what());
+                }
+            }
+
+            // Return applied IDs as JSON array
+            nlohmann::json result = applied_ids;
+            return result.dump();
+        } catch (const std::exception& e) {
+            printf("[applyRemoteChanges] Error: %s\n", e.what());
+            return "[]";
+        }
+    }
+
+    // Mark audit log entries as synchronized
+    void markEntriesSynced(const std::string& idsJson) {
+        try {
+            auto j = nlohmann::json::parse(idsJson);
+            if (!j.is_array()) return;
+
+            std::vector<std::string> ids;
+            for (const auto& id : j) {
+                if (id.is_string()) {
+                    ids.push_back(id.get<std::string>());
+                }
+            }
+
+            mark_audit_entries_synced(*ref_->get(), ids);
+        } catch (const std::exception& e) {
+            printf("[markEntriesSynced] Error: %s\n", e.what());
+        }
+    }
+
+    // Receive sync data (ServerSentEvent JSON) - for server-side sync
+    // Returns JSON array of applied global IDs
+    std::string receive(const std::string& json) {
+        try {
+            printf("[receive] Parsing sync data: %zu bytes\n", json.size());
+            auto event = server_sent_event::from_json(json);
+
+            if (!event) {
+                printf("[receive] Failed to parse server_sent_event\n");
+                return "[]";
+            }
+
+            std::vector<std::string> applied_ids;
+
+            if (event->event_type == server_sent_event::type::audit_log) {
+                printf("[receive] Processing %zu audit log entries\n", event->audit_logs.size());
+
+                // Disable sync triggers while applying
+                ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 1 WHERE id = 1");
+
+                for (const auto& entry : event->audit_logs) {
+                    // Skip if already in AuditLog (idempotent)
+                    auto existing = ref_->get()->db().query(
+                        "SELECT id FROM AuditLog WHERE globalId = ?",
+                        {entry.global_id}
+                    );
+                    if (!existing.empty()) {
+                        printf("[receive] Skipping duplicate: %s\n", entry.global_id.c_str());
+                        continue;
+                    }
+
+                    // Get schema for table
+                    const auto* props = ref_->get()->get_properties_for_table(entry.table_name);
+                    std::unordered_map<std::string, column_type> schema;
+                    if (props) {
+                        for (const auto& [name, desc] : *props) {
+                            schema[name] = desc.type;
+                        }
+                    }
+
+                    // Generate and execute SQL for data table
+                    auto [sql, params] = entry.generate_instruction(schema);
+                    if (!sql.empty()) {
+                        try {
+                            ref_->get()->db().execute(sql, params);
+
+                            // Record the audit entry as from remote (for eventsAfter queries)
+                            std::string insert_sql = R"(
+                                INSERT INTO AuditLog (globalId, tableName, operation, rowId, globalRowId,
+                                    changedFields, changedFieldsNames, timestamp, isFromRemote, isSynchronized)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+                            )";
+                            ref_->get()->db().execute(insert_sql, {
+                                entry.global_id,
+                                entry.table_name,
+                                entry.operation,
+                                entry.row_id,
+                                entry.global_row_id,
+                                entry.changed_fields_to_json(),
+                                entry.changed_fields_names_to_json(),
+                                entry.timestamp
+                            });
+
+                            applied_ids.push_back(entry.global_id);
+                            printf("[receive] Applied: %s %s\n", entry.operation.c_str(), entry.table_name.c_str());
+                        } catch (const std::exception& e) {
+                            printf("[receive] SQL failed: %s\n", e.what());
+                        }
+                    }
+                }
+
+                // Re-enable sync triggers
+                ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 0 WHERE id = 1");
+
+            } else if (event->event_type == server_sent_event::type::ack) {
+                printf("[receive] Processing ACK for %zu entries\n", event->acked_ids.size());
+                mark_audit_entries_synced(*ref_->get(), event->acked_ids);
+                applied_ids = event->acked_ids;
+            }
+
+            nlohmann::json result = applied_ids;
+            return result.dump();
+        } catch (const std::exception& e) {
+            printf("[receive] Error: %s\n", e.what());
+            return "[]";
+        }
+    }
+
+    // Get audit log events after a checkpoint (for server-side sync)
+    // Returns JSON array of audit log entries
+    std::string eventsAfter(const std::string& checkpointGlobalId) {
+        try {
+            std::optional<std::string> checkpoint = std::nullopt;
+            if (!checkpointGlobalId.empty()) {
+                checkpoint = checkpointGlobalId;
+            }
+
+            auto entries = events_after(ref_->get()->db(), checkpoint);
+            printf("[eventsAfter] Found %zu entries after checkpoint\n", entries.size());
+
+            // Convert to JSON array
+            std::string json = "[";
+            for (size_t i = 0; i < entries.size(); i++) {
+                if (i > 0) json += ",";
+                json += entries[i].to_json();
+            }
+            json += "]";
+
+            return json;
+        } catch (const std::exception& e) {
+            printf("[eventsAfter] Error: %s\n", e.what());
+            return "[]";
+        }
+    }
+
+    // Observe AuditLog table for changes
+    // Calls the JS callback with JSON of new entries when INSERTs happen
+    // Returns observer ID (for removal)
+    uint64_t observeAuditLog(val callback) {
+        try {
+            printf("[observeAuditLog] Registering observer...\n");
+            // Store the callback so it persists
+            auto* stored_callback = new val(callback);
+
+            // Observe the AuditLog table
+            auto observer_id = ref_->get()->add_table_observer("AuditLog", stored_callback,
+                [this](void* context, const std::string& operation, int64_t row_id, const std::string& global_id) {
+                    auto* stored_callback = static_cast<val*>(context);
+                    printf("[observeAuditLog] Callback fired: op=%s row_id=%lld global_id=%s\n",
+                           operation.c_str(), (long long)row_id, global_id.c_str());
+
+                    // Handle INSERT, UPDATE, and DELETE operations on AuditLog
+                    // (All represent changes we need to propagate)
+                    if (operation != "INSERT") {
+                        printf("[observeAuditLog] Skipping %s (only INSERT creates new audit entries)\n", operation.c_str());
+                        return;
+                    }
+
+                    // Query all unsynced entries, but ONLY return the specific entry that
+                    // triggered this callback. This prevents an infinite loop where receiving
+                    // a remote change would re-broadcast all pending local changes.
+                    auto all_entries = query_audit_log(ref_->get()->db(), true, std::nullopt);
+                    printf("[observeAuditLog] Queried %zu total entries, filtering for global_id=%s\n",
+                           all_entries.size(), global_id.c_str());
+
+                    // Build JSON with only the entry that triggered this callback
+                    std::string json = "[";
+                    bool found = false;
+                    for (const auto& entry : all_entries) {
+                        if (entry.global_id == global_id) {
+                            json += entry.to_json();
+                            found = true;
+                            break;
+                        }
+                    }
+                    json += "]";
+
+                    if (!found) {
+                        printf("[observeAuditLog] Entry with global_id=%s not found in unsynced entries\n", global_id.c_str());
+                    }
+
+                    // Call JS callback with the JSON
+                    printf("[observeAuditLog] Calling JS callback, found=%d\n", found ? 1 : 0);
+                    (*stored_callback)(json);
+                });
+
+            // Store callback reference for cleanup
+            observer_callbacks_[observer_id] = stored_callback;
+            printf("[observeAuditLog] Observer registered with id=%llu\n", (unsigned long long)observer_id);
+
+            return observer_id;
+        } catch (const std::exception& e) {
+            printf("[observeAuditLog] Error: %s\n", e.what());
+            return 0;
+        }
+    }
+
+    // Remove an audit log observer
+    void removeAuditLogObserver(uint64_t observer_id) {
+        try {
+            ref_->get()->remove_table_observer("AuditLog", observer_id);
+
+            // Clean up stored callback
+            auto it = observer_callbacks_.find(observer_id);
+            if (it != observer_callbacks_.end()) {
+                delete it->second;
+                observer_callbacks_.erase(it);
+            }
+        } catch (const std::exception& e) {
+            printf("[removeAuditLogObserver] Error: %s\n", e.what());
+        }
+    }
+
+private:
+    swift_lattice_ref* ref_ = nullptr;
+    std::unordered_map<uint64_t, val*> observer_callbacks_;
+};
+
+// ============================================================================
+// Standalone function to create unmanaged DynamicObject (for use in decorators)
+// ============================================================================
+
+JsDynamicObject createDynamicObject(const std::string& table_name, const val& properties) {
+    try {
+        // Convert JS properties array to SwiftSchema
+        SwiftSchema schema;
+        auto length = properties["length"].as<size_t>();
+        for (size_t i = 0; i < length; i++) {
+            auto desc = js_to_property_descriptor(properties[i]);
+            schema[desc.name] = desc;
+        }
+
+        // Create unmanaged swift_dynamic_object
+        swift_dynamic_object unmanaged_obj(table_name, schema);
+
+        // Wrap in dynamic_object_ref
+        auto* obj_ref = new dynamic_object_ref(unmanaged_obj);
+        retainDynamicObjectRef(obj_ref);
+
+        return JsDynamicObject(obj_ref);
+    } catch (const std::exception& e) {
+        printf("[createDynamicObject] Error: %s\n", e.what());
+        return JsDynamicObject();
+    } catch (...) {
+        printf("[createDynamicObject] Unknown error\n");
+        return JsDynamicObject();
+    }
+}
+
+// ============================================================================
+// Sync Message Creation (for test server)
+// ============================================================================
+
+// Create a sync message from audit log entries JSON array
+std::string createSyncMessage(const std::string& entriesJson) {
+    try {
+        // Parse the entries JSON array
+        auto j = nlohmann::json::parse(entriesJson);
+        if (!j.is_array()) {
+            printf("[createSyncMessage] Expected array\n");
+            return "";
+        }
+
+        std::vector<audit_log_entry> entries;
+        for (const auto& entry_json : j) {
+            auto entry = audit_log_entry::from_json(entry_json.dump());
+            if (entry) {
+                entries.push_back(*entry);
+            }
+        }
+
+        if (entries.empty()) {
+            return "";
+        }
+        auto event = server_sent_event::make_audit_log(std::move(entries));
+        return event.to_json();
+    } catch (const std::exception& e) {
+        printf("[createSyncMessage] Error: %s\n", e.what());
+        return "";
+    }
+}
+
+// Create an ack message from global IDs JSON array
+std::string createAckMessage(const std::string& idsJson) {
+    try {
+        // Parse the IDs JSON array
+        std::vector<std::string> ids;
+        // Simple JSON array parsing
+        auto json = nlohmann::json::parse(idsJson);
+        for (const auto& id : json) {
+            ids.push_back(id.get<std::string>());
+        }
+        if (ids.empty()) {
+            return "";
+        }
+        auto event = server_sent_event::make_ack(std::move(ids));
+        return event.to_json();
+    } catch (const std::exception& e) {
+        printf("[createAckMessage] Error: %s\n", e.what());
+        return "";
+    }
+}
+
+// ============================================================================
+// Embind bindings
+// ============================================================================
+
+// Simple test function to check WASM version
+std::string getWasmVersion() {
+    return "opfs-vfs-v2";  // Change this to track versions
+}
+
+EMSCRIPTEN_BINDINGS(lattice) {
+    // Version check
+    function("getWasmVersion", &getWasmVersion);
+
+    // Sync message creation (for test server)
+    function("createSyncMessage", &createSyncMessage);
+    function("createAckMessage", &createAckMessage);
+
+    // OPFS initialization
+    function("initOPFSAsync", &initOPFSAsync);  // Async via pthread (for main thread)
+    function("initOPFSSync", &initOPFSSync);    // Sync (for SharedWorker)
+    function("isOPFSAvailable", &isOPFSAvailable);
+    function("isOPFSInitInProgress", &isOPFSInitInProgress);
+    function("isOPFSInitFailed", &isOPFSInitFailed);
+
+    // Standalone function for creating unmanaged objects (called from decorators)
+    function("createDynamicObject", &createDynamicObject);
+    // JsLinkList - C++ backing for List<T> properties
+    class_<JsLinkList>("LinkList")
+        .constructor<>()
+        .function("isValid", &JsLinkList::isValid)
+        .function("size", &JsLinkList::size)
+        .function("empty", &JsLinkList::empty)
+        .function("at", &JsLinkList::at)
+        .function("push_back", &JsLinkList::push_back)
+        .function("erase", &JsLinkList::erase)
+        .function("clear", &JsLinkList::clear);
+
+    // JsDynamicObject - C++ backing storage for model instances
+    class_<JsDynamicObject>("DynamicObject")
+        .constructor<>()
+        .function("isValid", &JsDynamicObject::isValid)
+        .function("getInt", &JsDynamicObject::getInt)
+        .function("getString", &JsDynamicObject::getString)
+        .function("getDouble", &JsDynamicObject::getDouble)
+        .function("getBool", &JsDynamicObject::getBool)
+        .function("hasValue", &JsDynamicObject::hasValue)
+        .function("setInt", &JsDynamicObject::setInt)
+        .function("setString", &JsDynamicObject::setString)
+        .function("setDouble", &JsDynamicObject::setDouble)
+        .function("setBool", &JsDynamicObject::setBool)
+        .function("setNil", &JsDynamicObject::setNil)
+        .function("getObject", &JsDynamicObject::getObject)
+        .function("setObject", &JsDynamicObject::setObject)
+        .function("getLinkList", &JsDynamicObject::getLinkList);
+
+    class_<JsLattice>("Lattice")
+        .constructor<std::string, val>()
+        .constructor<std::string, val, std::string, std::string>()
+        .function("add", &JsLattice::add)
+        .function("addObject", &JsLattice::addObject)
+        .function("find", &JsLattice::find)
+        .function("findObject", &JsLattice::findObject)
+        .function("findByGlobalId", &JsLattice::findByGlobalId)
+        .function("objects", &JsLattice::objects)
+        .function("count", &JsLattice::count)
+        .function("remove", &JsLattice::remove)
+        .function("beginWrite", &JsLattice::beginWrite)
+        .function("commitWrite", &JsLattice::commitWrite)
+        .function("createObject", &JsLattice::createObject)
+        .function("debugQueryCount", &JsLattice::debugQueryCount)
+        .function("debugListTables", &JsLattice::debugListTables)
+        .property("path", &JsLattice::path)
+        // Audit log / sync methods
+        .function("getPendingAuditLog", &JsLattice::getPendingAuditLog)
+        .function("applyRemoteChanges", &JsLattice::applyRemoteChanges)
+        .function("markEntriesSynced", &JsLattice::markEntriesSynced)
+        .function("observeAuditLog", &JsLattice::observeAuditLog)
+        .function("removeAuditLogObserver", &JsLattice::removeAuditLogObserver)
+        // Server-side sync methods (for test server)
+        .function("receive", &JsLattice::receive)
+        .function("eventsAfter", &JsLattice::eventsAfter);
+}

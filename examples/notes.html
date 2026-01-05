@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lattice Notes - Cross-Tab Sync Demo</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 { color: #00d9ff; margin-bottom: 5px; }
+        .subtitle { color: #888; margin-bottom: 20px; font-size: 14px; }
+        .instance-id {
+            font-family: monospace;
+            background: #2a2a4e;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .input-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #444;
+            border-radius: 6px;
+            background: #2a2a4e;
+            color: #eee;
+            font-size: 16px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #00d9ff;
+        }
+        button {
+            padding: 12px 24px;
+            background: #00d9ff;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        button:hover { background: #00b8d9; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
+        .notes-list {
+            list-style: none;
+            padding: 0;
+        }
+        .note {
+            background: #2a2a4e;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .note-content { flex: 1; }
+        .note-time {
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+        }
+        .note-delete {
+            background: transparent;
+            color: #ff6b6b;
+            padding: 5px 10px;
+            font-size: 14px;
+        }
+        .note-delete:hover { background: rgba(255,107,107,0.2); }
+        .status {
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .status.loading { background: #3a3a5e; }
+        .status.ready { background: #1a4d3a; }
+        .status.error { background: #4d1a1a; }
+        .empty {
+            text-align: center;
+            color: #666;
+            padding: 40px;
+        }
+        .log {
+            margin-top: 30px;
+            padding: 15px;
+            background: #0a0a1e;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .log-entry { margin-bottom: 5px; color: #888; }
+        .log-entry.sync { color: #00d9ff; }
+        .log-entry.local { color: #90EE90; }
+        .log-entry.server { color: #ffa500; }
+
+        /* Server Sync Section */
+        .sync-section {
+            margin-top: 20px;
+            border: 1px solid #444;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .sync-header {
+            background: #2a2a4e;
+            padding: 12px 15px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .sync-header:hover { background: #3a3a5e; }
+        .sync-header h3 { margin: 0; font-size: 14px; color: #888; }
+        .sync-toggle { color: #888; }
+        .sync-body {
+            padding: 15px;
+            display: none;
+        }
+        .sync-body.open { display: block; }
+        .sync-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        .sync-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .sync-dot.connected { background: #4ade80; }
+        .sync-dot.connecting { background: #fbbf24; animation: pulse 1s infinite; }
+        .sync-dot.error { background: #f87171; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .auth-form { display: flex; flex-direction: column; gap: 10px; }
+        .auth-form input {
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 14px;
+        }
+        .auth-form input:focus { outline: none; border-color: #00d9ff; }
+        .auth-buttons { display: flex; gap: 10px; }
+        .auth-buttons button {
+            flex: 1;
+            padding: 10px;
+            font-size: 14px;
+        }
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+        }
+        .btn-secondary:hover { background: rgba(0,217,255,0.1); }
+        .user-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .user-email { color: #00d9ff; }
+        .btn-logout {
+            background: transparent;
+            color: #ff6b6b;
+            padding: 8px 16px;
+            font-size: 13px;
+        }
+        .btn-logout:hover { background: rgba(255,107,107,0.2); }
+        .error-msg { color: #ff6b6b; font-size: 13px; margin-top: 5px; }
+        .server-url-input { margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Lattice Notes</h1>
+    <p class="subtitle">
+        Cross-tab sync demo. Open this page in multiple tabs!
+        <br>Instance: <span class="instance-id" id="instanceId">-</span>
+    </p>
+
+    <div id="status" class="status loading">Loading WASM...</div>
+
+    <div class="input-row">
+        <input type="text" id="noteInput" placeholder="Type a note..." disabled>
+        <button id="addBtn" disabled>Add</button>
+    </div>
+
+    <ul id="notesList" class="notes-list">
+        <li class="empty">Loading notes...</li>
+    </ul>
+
+    <div class="log" id="log"></div>
+
+    <!-- Optional Server Sync Section -->
+    <div class="sync-section">
+        <div class="sync-header" id="syncHeader">
+            <h3>Server Sync (Optional)</h3>
+            <span class="sync-toggle" id="syncToggle">+</span>
+        </div>
+        <div class="sync-body" id="syncBody">
+            <div class="sync-status">
+                <span class="sync-dot" id="syncDot"></span>
+                <span id="syncStatusText">Not connected</span>
+            </div>
+
+            <!-- Auth Form (when not logged in) -->
+            <div id="authSection">
+                <input type="text" id="serverUrl" class="server-url-input"
+                       placeholder="Server URL (e.g., http://localhost:8080)"
+                       value="http://localhost:8080">
+                <div class="auth-form">
+                    <input type="email" id="authEmail" placeholder="Email">
+                    <input type="password" id="authPassword" placeholder="Password">
+                    <div id="authError" class="error-msg" style="display: none;"></div>
+                    <div class="auth-buttons">
+                        <button id="loginBtn">Login</button>
+                        <button id="registerBtn" class="btn-secondary">Register</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User Info (when logged in) -->
+            <div id="userSection" style="display: none;">
+                <div class="user-info">
+                    <span>Logged in as <span class="user-email" id="userEmail"></span></span>
+                    <button id="logoutBtn" class="btn-logout">Logout</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="./notes.ts"></script>
+</body>
+</html>

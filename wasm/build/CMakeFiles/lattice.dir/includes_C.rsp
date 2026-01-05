@@ -1,0 +1,1 @@
+-I/Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include -I/Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include -I/Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/SqliteVec/src -I/Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/SqliteVec/include

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LatticeJS Browser Tests</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 { color: #00d4ff; }
+        .test { padding: 10px; margin: 5px 0; border-radius: 4px; }
+        .pass { background: #1a4d1a; }
+        .fail { background: #4d1a1a; }
+        .running { background: #4d4d1a; }
+        .skip { background: #333; color: #888; }
+        pre {
+            background: #0d0d1a;
+            padding: 10px;
+            overflow-x: auto;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        #summary {
+            font-size: 1.2em;
+            margin: 20px 0;
+            padding: 15px;
+            background: #0d0d1a;
+            border-radius: 4px;
+        }
+        .info {
+            background: #1a3a4d;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>LatticeJS Browser Tests</h1>
+    <div class="info">
+        Tests require WASM to be built. If WASM tests are skipped, run:<br>
+        <code>npm run build:wasm</code>
+    </div>
+    <div id="summary">Loading...</div>
+    <div id="tests"></div>
+    <script type="module" src="./tests.ts"></script>
+</body>
+</html>

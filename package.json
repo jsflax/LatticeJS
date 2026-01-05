@@ -1,0 +1,60 @@
+{
+  "name": "lattice-js",
+  "version": "0.1.0",
+  "description": "Lattice ORM for JavaScript/TypeScript with WebAssembly",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./worker": {
+      "import": "./dist/worker/index.js",
+      "types": "./dist/worker/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build:wasm": "cd wasm && mkdir -p build && cd build && emcmake cmake .. && emmake make",
+    "build:ts": "tsc",
+    "build": "npm run build:wasm && npm run build:ts",
+    "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "vite --open /test/browser/index.html",
+    "clean": "rm -rf dist wasm/build"
+  },
+  "dependencies": {
+    "comlink": "^4.4.1"
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-decorators": "^7.28.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.1.2",
+    "babel-plugin-transform-typescript-metadata": "^0.4.0",
+    "reflect-metadata": "^0.2.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.4.21",
+    "vitest": "^1.1.0",
+    "ws": "^8.18.3"
+  },
+  "peerDependencies": {
+    "reflect-metadata": "^0.2.1"
+  },
+  "files": [
+    "dist",
+    "wasm/build/*.js",
+    "wasm/build/*.wasm"
+  ],
+  "keywords": [
+    "orm",
+    "database",
+    "sqlite",
+    "wasm",
+    "webassembly",
+    "sync"
+  ],
+  "author": "Jason",
+  "license": "MIT"
+}
