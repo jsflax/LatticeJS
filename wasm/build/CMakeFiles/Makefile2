@@ -54,10 +54,10 @@ RM = /opt/homebrew/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /Users/jason/Documents/LatticeJS/wasm
+CMAKE_SOURCE_DIR = /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /Users/jason/Documents/LatticeJS/wasm/build
+CMAKE_BINARY_DIR = /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -85,14 +85,14 @@ clean: CMakeFiles/lattice.dir/clean
 CMakeFiles/lattice.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13,14 "Built target lattice"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 "Built target lattice"
 .PHONY : CMakeFiles/lattice.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/lattice.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles 14
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles 19
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/lattice.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles 0
 .PHONY : CMakeFiles/lattice.dir/rule
 
 # Convenience name for target.
@@ -102,7 +102,7 @@ lattice: CMakeFiles/lattice.dir/rule
 # codegen rule for target.
 CMakeFiles/lattice.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13,14 "Finished codegen for target lattice"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 "Finished codegen for target lattice"
 .PHONY : CMakeFiles/lattice.dir/codegen
 
 # clean rule for target.

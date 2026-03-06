@@ -1,3 +1,3 @@
-/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles/lattice.dir
-/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles/edit_cache.dir
-/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles/rebuild_cache.dir
+/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/lattice.dir
+/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/edit_cache.dir
+/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/rebuild_cache.dir

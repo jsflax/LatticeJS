@@ -1,5 +1,5 @@
 CMakeFiles/lattice.dir/opfs_vfs.cpp.o: \
-  /Users/jason/Documents/LatticeJS/wasm/opfs_vfs.cpp \
+  /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/opfs_vfs.cpp \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/sqlite3.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/compat/stdarg.h \
   /Users/jason/emsdk/upstream/lib/clang/22/include/stdarg.h \
