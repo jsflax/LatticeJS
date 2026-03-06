@@ -4,6 +4,7 @@ import {
     ColumnType,
     PropertyDescriptor,
     SchemaEntry,
+    Constraint,
     ModelConstructor,
     LATTICE_TABLE,
     LATTICE_FIELDS,
@@ -138,6 +139,220 @@ function getNullableColumnType(marker: NullableMarker): ColumnType {
 }
 
 // ============================================================================
+// Indexed Marker
+// ============================================================================
+
+const INDEXED_MARKER = Symbol('lattice:indexed');
+
+interface IndexedMarker {
+    [INDEXED_MARKER]: true;
+    innerValue: unknown;
+}
+
+/**
+ * Marks a property as indexed for faster queries.
+ * Wrap a default value: `name = indexed('')`
+ */
+export function indexed<T>(defaultValue: T): T {
+    const marker: IndexedMarker = {
+        [INDEXED_MARKER]: true,
+        innerValue: defaultValue,
+    };
+    return marker as unknown as T;
+}
+
+export function isIndexedMarker(value: unknown): value is IndexedMarker {
+    return typeof value === 'object' && value !== null && INDEXED_MARKER in value;
+}
+
+// ============================================================================
+// Full Text Marker
+// ============================================================================
+
+const FULL_TEXT_MARKER = Symbol('lattice:fullText');
+
+interface FullTextMarker {
+    [FULL_TEXT_MARKER]: true;
+    innerValue: unknown;
+}
+
+/**
+ * Marks a string property for FTS5 full-text search.
+ * Wrap a default value: `content = fullText('')`
+ */
+export function fullText<T extends string>(defaultValue: T): T {
+    const marker: FullTextMarker = {
+        [FULL_TEXT_MARKER]: true,
+        innerValue: defaultValue,
+    };
+    return marker as unknown as T;
+}
+
+export function isFullTextMarker(value: unknown): value is FullTextMarker {
+    return typeof value === 'object' && value !== null && FULL_TEXT_MARKER in value;
+}
+
+// ============================================================================
+// Vector Marker
+// ============================================================================
+
+const VECTOR_MARKER = Symbol('lattice:vector');
+
+interface VectorMarker {
+    [VECTOR_MARKER]: true;
+    dimensions: number;
+}
+
+/**
+ * Marks a property as a vector column for nearest-neighbor search.
+ * @param dimensions - The fixed dimensionality of the vector
+ *
+ * @example
+ * ```typescript
+ * @model
+ * class Document {
+ *     title = '';
+ *     embedding = vector(384);
+ * }
+ * ```
+ */
+export function vector(dimensions: number): Float32Array {
+    const marker: VectorMarker = {
+        [VECTOR_MARKER]: true,
+        dimensions,
+    };
+    return marker as unknown as Float32Array;
+}
+
+export function isVectorMarker(value: unknown): value is VectorMarker {
+    return typeof value === 'object' && value !== null && VECTOR_MARKER in value;
+}
+
+// ============================================================================
+// Embedded Model Marker
+// ============================================================================
+
+const EMBEDDED_MARKER = Symbol('lattice:embedded');
+
+interface EmbeddedMarker<T> {
+    [EMBEDDED_MARKER]: true;
+    embeddedClass: new () => T;
+}
+
+/**
+ * Marks a property as an embedded model (stored as JSON TEXT).
+ *
+ * @example
+ * ```typescript
+ * class Address {
+ *     street = '';
+ *     city = '';
+ *     zip = '';
+ * }
+ *
+ * @model
+ * class Person {
+ *     name = '';
+ *     address = embedded(Address);
+ * }
+ * ```
+ */
+export function embedded<T>(embeddedClass: new () => T): T | null {
+    const marker: EmbeddedMarker<T> = {
+        [EMBEDDED_MARKER]: true,
+        embeddedClass,
+    };
+    return marker as unknown as T | null;
+}
+
+export function isEmbeddedMarker(value: unknown): value is EmbeddedMarker<any> {
+    return typeof value === 'object' && value !== null && EMBEDDED_MARKER in value;
+}
+
+// ============================================================================
+// Enum Value Marker
+// ============================================================================
+
+const ENUM_MARKER = Symbol('lattice:enum');
+
+interface EnumMarker {
+    [ENUM_MARKER]: true;
+    enumObj: Record<string, string | number>;
+    defaultValue?: string | number;
+}
+
+/**
+ * Marks a property as an enum value.
+ * Numeric enums are stored as INT, string enums as TEXT.
+ *
+ * @example
+ * ```typescript
+ * enum Status { Active = 'active', Inactive = 'inactive' }
+ *
+ * @model
+ * class Task {
+ *     status = enumValue(Status, Status.Active);
+ * }
+ * ```
+ */
+export function enumValue<T extends Record<string, string | number>>(
+    enumObj: T,
+    defaultValue?: T[keyof T]
+): T[keyof T] {
+    const marker: EnumMarker = {
+        [ENUM_MARKER]: true,
+        enumObj,
+        defaultValue,
+    };
+    return marker as unknown as T[keyof T];
+}
+
+export function isEnumMarker(value: unknown): value is EnumMarker {
+    return typeof value === 'object' && value !== null && ENUM_MARKER in value;
+}
+
+function isNumericEnum(enumObj: Record<string, string | number>): boolean {
+    return Object.values(enumObj).some(v => typeof v === 'number');
+}
+
+// ============================================================================
+// Unique Constraint Metadata
+// ============================================================================
+
+const LATTICE_CONSTRAINTS = Symbol('lattice:constraints');
+
+/**
+ * Apply a unique constraint to a single property.
+ * Use as a decorator: `@unique() name = ''`
+ * Or as a function passed to the model.
+ */
+export function unique(opts?: { allowsUpsert?: boolean }): PropertyDecorator {
+    return (target: any, propertyKey: string | symbol) => {
+        const constraints: Constraint[] = Reflect.getMetadata(LATTICE_CONSTRAINTS, target.constructor) || [];
+        constraints.push({
+            columns: [String(propertyKey)],
+            allowsUpsert: opts?.allowsUpsert,
+        });
+        Reflect.defineMetadata(LATTICE_CONSTRAINTS, constraints, target.constructor);
+    };
+}
+
+/**
+ * Apply a compound unique constraint across multiple fields.
+ * Call before @model decorator or store on the class.
+ */
+export function compoundUnique(fields: string[], opts?: { allowsUpsert?: boolean }): ClassDecorator {
+    return (target: any) => {
+        const constraints: Constraint[] = Reflect.getMetadata(LATTICE_CONSTRAINTS, target) || [];
+        constraints.push({
+            columns: fields,
+            allowsUpsert: opts?.allowsUpsert,
+        });
+        Reflect.defineMetadata(LATTICE_CONSTRAINTS, constraints, target);
+    };
+}
+
+// ============================================================================
 // @model Decorator
 // ============================================================================
 
@@ -195,15 +410,58 @@ function transformModelClass<T extends ModelConstructor>(target: T, tableName: s
                 defaultValue: null,
                 nullable: true,
             });
+        } else if (isVectorMarker(value)) {
+            propertySchemas.push({
+                name: key,
+                type: 'blob',
+                kind: 'primitive',
+                defaultValue: null,
+                nullable: true,
+                isVector: true,
+                vectorDimensions: value.dimensions,
+            });
+        } else if (isEmbeddedMarker(value)) {
+            propertySchemas.push({
+                name: key,
+                type: 'string',
+                kind: 'primitive',
+                defaultValue: null,
+                nullable: true,
+                embeddedClass: value.embeddedClass,
+            });
+        } else if (isEnumMarker(value)) {
+            const isNumeric = isNumericEnum(value.enumObj);
+            propertySchemas.push({
+                name: key,
+                type: isNumeric ? 'int' : 'string',
+                kind: 'primitive',
+                defaultValue: value.defaultValue ?? (isNumeric ? 0 : ''),
+                enumObj: value.enumObj,
+            });
         } else {
-            const isNullable = value === null || value === undefined;
-            const inferredType = inferTypeFromValue(value);
+            // Check for indexed/fullText wrappers
+            let actualValue = value;
+            let isIndexedProp = false;
+            let isFullTextProp = false;
+
+            if (isIndexedMarker(value)) {
+                actualValue = value.innerValue;
+                isIndexedProp = true;
+            } else if (isFullTextMarker(value)) {
+                actualValue = value.innerValue;
+                isFullTextProp = true;
+            }
+
+            const isNullable = actualValue === null || actualValue === undefined;
+            const inferredType = inferTypeFromValue(actualValue);
             propertySchemas.push({
                 name: key,
                 type: inferredType,
                 kind: 'primitive',
-                defaultValue: value,
+                defaultValue: actualValue,
                 nullable: isNullable,
+                isIndexed: isIndexedProp,
+                isFullText: isFullTextProp,
             });
         }
     }
@@ -230,6 +488,9 @@ function transformModelClass<T extends ModelConstructor>(target: T, tableName: s
             kind: s.kind,
             targetTable,
             nullable: s.nullable ?? true,
+            isVector: s.isVector ?? false,
+            isFullText: s.isFullText ?? false,
+            isIndexed: s.isIndexed ?? false,
         };
     });
 
@@ -347,6 +608,36 @@ function getPropertyValue(instance: any, name: string, schema: PropertySchema): 
     const dynObj = instance[DYNAMIC_OBJECT];
     if (!dynObj) return schema.defaultValue;
 
+    // Handle embedded model — deserialize JSON
+    if (schema.embeddedClass) {
+        const json = dynObj.getString(name);
+        if (!json) return null;
+        try {
+            const data = JSON.parse(json);
+            const obj = new schema.embeddedClass();
+            Object.assign(obj, data);
+            return obj;
+        } catch {
+            return null;
+        }
+    }
+
+    // Handle enum — convert stored value back to enum value
+    if (schema.enumObj) {
+        if (schema.type === 'int') {
+            const val = dynObj.getInt(name);
+            return typeof val === 'bigint' ? Number(val) : val;
+        }
+        return dynObj.getString(name);
+    }
+
+    // Handle vector — read blob, return Float32Array
+    if (schema.isVector) {
+        const data = dynObj.getData(name);
+        if (!data || data.byteLength === 0) return null;
+        return new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4);
+    }
+
     // Handle link properties - use getObject to get linked DynamicObject
     if (schema.kind === 'link') {
         // Get linked object directly from C++
@@ -438,6 +729,32 @@ function setPropertyValue(instance: any, name: string, value: any, schema: Prope
         // Clear resolved link cache
         if (schema.kind === 'link' && instance._resolvedLinks) {
             delete instance._resolvedLinks[name];
+        }
+        return;
+    }
+
+    // Handle embedded model — serialize to JSON
+    if (schema.embeddedClass) {
+        dynObj.setString(name, JSON.stringify(value));
+        return;
+    }
+
+    // Handle enum
+    if (schema.enumObj) {
+        if (schema.type === 'int') {
+            dynObj.setInt(name, typeof value === 'bigint' ? value : BigInt(Math.floor(Number(value))));
+        } else {
+            dynObj.setString(name, String(value));
+        }
+        return;
+    }
+
+    // Handle vector — accept Float32Array, store as blob
+    if (schema.isVector) {
+        if (value instanceof Float32Array) {
+            dynObj.setData(name, new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+        } else {
+            dynObj.setData(name, value);
         }
         return;
     }
@@ -539,10 +856,16 @@ export function extractSchema(modelClass: ModelConstructor, allModels: Set<Model
         type: ps.type,
         kind: ps.kind,
         targetTable: ps.targetModel ? getTableName(ps.targetModel) : undefined,
-        nullable: ps.nullable ?? (ps.kind !== 'primitive'), // Links/lists are nullable by default
+        nullable: ps.nullable ?? (ps.kind !== 'primitive'),
+        isVector: ps.isVector,
+        isFullText: ps.isFullText,
+        isIndexed: ps.isIndexed,
     }));
 
-    return { tableName, properties };
+    // Get constraints from metadata
+    const constraints: Constraint[] | undefined = Reflect.getMetadata(LATTICE_CONSTRAINTS, modelClass);
+
+    return { tableName, properties, constraints };
 }
 
 /**

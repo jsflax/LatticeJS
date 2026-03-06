@@ -10,17 +10,25 @@ export interface PropertyDescriptor {
     targetTable?: string;
     nullable?: boolean;
     isVector?: boolean;
+    isFullText?: boolean;
+    isIndexed?: boolean;
+}
+
+export interface Constraint {
+    columns: string[];
+    allowsUpsert?: boolean;
 }
 
 export interface SchemaEntry {
     tableName: string;
     properties: PropertyDescriptor[];
+    constraints?: Constraint[];
 }
 
 export interface CollectionChange {
-    insertions: number[];
-    deletions: number[];
-    modifications: number[];
+    operation: 'INSERT' | 'UPDATE' | 'DELETE';
+    rowId: number;
+    globalRowId: string;
 }
 
 export interface LatticeObject {
@@ -40,6 +48,8 @@ export interface FieldMetadata {
     type: ColumnType;
     nullable: boolean;
     isVector: boolean;
+    isFullText: boolean;
+    isIndexed: boolean;
 }
 
 export interface LinkMetadata {
@@ -72,9 +82,16 @@ export interface LatticeWasm {
         whereClause: string | null,
         orderBy: string | null,
         limit: number | null,
-        offset: number | null
+        offset: number | null,
+        groupBy?: string | null,
+        distinctBy?: string | null
     ): Record<string, any>[];
-    count(tableName: string, whereClause: string | null): number;
+    count(
+        tableName: string,
+        whereClause: string | null,
+        groupBy?: string | null,
+        distinctBy?: string | null
+    ): number;
     remove(tableName: string, id: number): boolean;
     beginWrite(): void;
     commitWrite(): void;
@@ -82,12 +99,71 @@ export interface LatticeWasm {
     debugListTables(): string;
     debugQueryCount(sql: string): number;
 
+    // Bulk insert
+    addBulk(tableName: string, objects: Record<string, any>[]): { id: number; globalId: string }[];
+
     // Audit log / sync methods
     getPendingAuditLog(): string;
     applyRemoteChanges(json: string): string;
     markEntriesSynced(idsJson: string): void;
     observeAuditLog(callback: (json: string) => void): number;
     removeAuditLogObserver(observerId: number): void;
+
+    // Fine-grained observation
+    observeTable(tableName: string, callback: (change: CollectionChange) => void): number;
+    removeTableObserver(tableName: string, observerId: number): void;
+    observeObject(tableName: string, rowId: number, callback: (changedFields: string) => void): number;
+    removeObjectObserver(tableName: string, rowId: number, observerId: number): void;
+
+    // FTS5 full-text search
+    ftsQuery(tableName: string, columnName: string, searchText: string, limit: number): Record<string, any>[];
+
+    // Vector search
+    nearestNeighbors(
+        tableName: string,
+        columnName: string,
+        queryVector: Float32Array,
+        k: number,
+        metric: number,
+        whereClause: string | null
+    ): { globalId: string; distance: number }[];
+
+    // Sync progress / filters / compaction
+    getSyncProgress(): SyncProgress;
+    onSyncProgress(callback: (progress: SyncProgress) => void): number;
+    updateSyncFilter(filterJson: string): void;
+    clearSyncFilter(): void;
+    compactAuditLog(): void;
+    safeCompactAuditLog(staleSeconds: number): void;
+    generateHistory(): void;
+}
+
+export interface SyncProgress {
+    pendingUpload: number;
+    totalUpload: number;
+    acked: number;
+    received: number;
+}
+
+export interface SyncFilter {
+    tableName: string;
+    whereClause?: string;
+}
+
+export interface MigrationContext {
+    pendingChanges(): TableChanges[];
+    hasChangesFor(tableName: string): boolean;
+    renameProperty(tableName: string, oldName: string, newName: string): void;
+    deleteAll(tableName: string): void;
+    executeSql(sql: string): void;
+    enumerateObjects(tableName: string, callback: (oldRow: Record<string, any>, newRow: Record<string, any>) => void): void;
+}
+
+export interface TableChanges {
+    tableName: string;
+    addedColumns: string[];
+    removedColumns: string[];
+    changedColumns: string[];
 }
 
 // Type inference helpers

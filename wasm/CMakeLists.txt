@@ -37,20 +37,20 @@ if(EMSCRIPTEN)
     add_compile_options(-sUSE_SQLITE3=1)
 endif()
 
-# Path to LatticeCpp
-set(LATTICE_CPP_DIR "${CMAKE_SOURCE_DIR}/../../LatticeCpp")
+# Path to LatticeCore
+set(LATTICE_CPP_DIR "/Users/jason/localdev/latticecore")
 
 # Include directories (include the bridge!)
 include_directories(
-    ${LATTICE_CPP_DIR}/Sources/LatticeCpp/include
+    ${LATTICE_CPP_DIR}/Sources/LatticeCore/include
     ${LATTICE_CPP_DIR}/Sources/LatticeSwiftCppBridge/include
     ${LATTICE_CPP_DIR}/Sources/SqliteVec/src
     ${LATTICE_CPP_DIR}/Sources/SqliteVec/include
 )
 
-# Collect LatticeCpp sources
+# Collect LatticeCore sources
 file(GLOB_RECURSE LATTICE_CPP_SOURCES
-    ${LATTICE_CPP_DIR}/Sources/LatticeCpp/src/*.cpp
+    ${LATTICE_CPP_DIR}/Sources/LatticeCore/src/*.cpp
 )
 
 # Bridge sources

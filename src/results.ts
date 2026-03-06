@@ -1,7 +1,7 @@
 // Live query results - always fetches fresh from database
 import type { ModelConstructor, LatticeWasm } from './types';
-import { getTableName, getPropertySchemas } from './decorators';
-import { DYNAMIC_OBJECT } from './storage';
+import { getTableName } from './decorators';
+import { QueryNode, QueryProxy, createQueryProxy } from './query';
 
 /**
  * Options for querying results.
@@ -11,6 +11,8 @@ export interface QueryOptions {
     orderBy?: string;
     limit?: number;
     offset?: number;
+    groupBy?: string;
+    distinctBy?: string;
 }
 
 /**
@@ -28,6 +30,13 @@ export interface QueryOptions {
  * // Chain filters
  * const adults = results.where("age >= 18").sorted("name ASC");
  *
+ * // Type-safe query builder
+ * const adults = results.where(q => q.age.gte(18));
+ *
+ * // GROUP BY / DISTINCT
+ * const byCity = results.groupBy("city");
+ * const uniqueNames = results.distinct("name");
+ *
  * // Get count (live)
  * console.log(await results.count());
  *
@@ -41,6 +50,8 @@ export class Results<T> implements AsyncIterable<T> {
     private tableName: string;
     private whereClause: string | null;
     private orderByClause: string | null;
+    private groupByClause: string | null;
+    private distinctByClause: string | null;
     private instanceFactory: (data: Record<string, unknown>) => T;
 
     constructor(
@@ -54,14 +65,30 @@ export class Results<T> implements AsyncIterable<T> {
         this.tableName = getTableName(modelClass);
         this.whereClause = options?.where ?? null;
         this.orderByClause = options?.orderBy ?? null;
+        this.groupByClause = options?.groupBy ?? null;
+        this.distinctByClause = options?.distinctBy ?? null;
         this.instanceFactory = instanceFactory;
+    }
+
+    private cloneWith(overrides: Partial<QueryOptions>): Results<T> {
+        return new Results(this.db, this.modelClass, this.instanceFactory, {
+            where: overrides.where !== undefined ? overrides.where : this.whereClause ?? undefined,
+            orderBy: overrides.orderBy !== undefined ? overrides.orderBy : this.orderByClause ?? undefined,
+            groupBy: overrides.groupBy !== undefined ? overrides.groupBy : this.groupByClause ?? undefined,
+            distinctBy: overrides.distinctBy !== undefined ? overrides.distinctBy : this.distinctByClause ?? undefined,
+        });
     }
 
     /**
      * Get the count of matching objects (live query).
      */
     async count(): Promise<number> {
-        const count = this.db.count(this.tableName, this.whereClause);
+        const count = this.db.count(
+            this.tableName,
+            this.whereClause,
+            this.groupByClause,
+            this.distinctByClause
+        );
         return typeof count === 'bigint' ? Number(count) : count;
     }
 
@@ -81,7 +108,9 @@ export class Results<T> implements AsyncIterable<T> {
             this.whereClause,
             this.orderByClause,
             1,      // limit
-            index   // offset
+            index,  // offset
+            this.groupByClause,
+            this.distinctByClause
         );
         if (data.length === 0) return undefined;
         return this.instanceFactory(data[0]);
@@ -103,23 +132,33 @@ export class Results<T> implements AsyncIterable<T> {
             this.whereClause,
             this.orderByClause,
             null,
-            null
+            null,
+            this.groupByClause,
+            this.distinctByClause
         );
         return data.map((d: Record<string, any>) => this.instanceFactory(d));
     }
 
     /**
-     * Filter results with a WHERE clause.
+     * Filter results with a WHERE clause or type-safe query builder.
      * Returns a new Results instance (chainable).
      */
-    where(clause: string): Results<T> {
+    where(clause: string): Results<T>;
+    where(builder: (q: QueryProxy<T>) => QueryNode): Results<T>;
+    where(clauseOrBuilder: string | ((q: QueryProxy<T>) => QueryNode)): Results<T> {
+        let sql: string;
+        if (typeof clauseOrBuilder === 'function') {
+            const proxy = createQueryProxy<T>();
+            const node = clauseOrBuilder(proxy);
+            sql = node.toSQL();
+        } else {
+            sql = clauseOrBuilder;
+        }
+
         const combined = this.whereClause
-            ? `(${this.whereClause}) AND (${clause})`
-            : clause;
-        return new Results(this.db, this.modelClass, this.instanceFactory, {
-            where: combined,
-            orderBy: this.orderByClause ?? undefined,
-        });
+            ? `(${this.whereClause}) AND (${sql})`
+            : sql;
+        return this.cloneWith({ where: combined });
     }
 
     /**
@@ -129,10 +168,23 @@ export class Results<T> implements AsyncIterable<T> {
      * @param clause - e.g., "name ASC", "age DESC", "name ASC, age DESC"
      */
     sorted(clause: string): Results<T> {
-        return new Results(this.db, this.modelClass, this.instanceFactory, {
-            where: this.whereClause ?? undefined,
-            orderBy: clause,
-        });
+        return this.cloneWith({ orderBy: clause });
+    }
+
+    /**
+     * Group results by a column.
+     * Returns a new Results instance (chainable).
+     */
+    groupBy(field: string): Results<T> {
+        return this.cloneWith({ groupBy: field });
+    }
+
+    /**
+     * Get distinct results by a column.
+     * Returns a new Results instance (chainable).
+     */
+    distinct(field: string): Results<T> {
+        return this.cloneWith({ distinctBy: field });
     }
 
     /**
@@ -140,13 +192,65 @@ export class Results<T> implements AsyncIterable<T> {
      * Returns a new Results instance (chainable).
      */
     limit(n: number): Results<T> {
-        // For limit, we need to return a LimitedResults or handle differently
-        // For now, create a simple wrapper that fetches with limit
         return new LimitedResults(this.db, this.modelClass, this.instanceFactory, {
             where: this.whereClause ?? undefined,
             orderBy: this.orderByClause ?? undefined,
+            groupBy: this.groupByClause ?? undefined,
+            distinctBy: this.distinctByClause ?? undefined,
             limit: n,
         });
+    }
+
+    /**
+     * Full-text search using FTS5 MATCH.
+     * Requires the column to be marked with fullText().
+     */
+    async matching(column: string, searchText: string, maxResults?: number): Promise<T[]> {
+        const data = this.db.ftsQuery(
+            this.tableName,
+            column,
+            searchText,
+            maxResults ?? 100
+        );
+        return data.map((d: Record<string, any>) => this.instanceFactory(d));
+    }
+
+    /**
+     * Vector nearest-neighbor search.
+     * Requires the column to be marked with vector(dimensions).
+     *
+     * @param column - The vector column name
+     * @param queryVector - Query vector as Float32Array
+     * @param k - Number of nearest neighbors
+     * @param options - Optional distance metric and where clause
+     */
+    async nearest(
+        column: string,
+        queryVector: Float32Array,
+        k: number,
+        options?: { distance?: 'l2' | 'cosine' | 'l1' }
+    ): Promise<{ item: T; distance: number }[]> {
+        const metricMap = { l2: 0, cosine: 1, l1: 2 };
+        const metric = metricMap[options?.distance ?? 'l2'];
+
+        const results = this.db.nearestNeighbors(
+            this.tableName,
+            column,
+            queryVector,
+            k,
+            metric,
+            this.whereClause
+        );
+
+        // Results contain globalId + distance, need to look up actual objects
+        const items: { item: T; distance: number }[] = [];
+        for (const r of results) {
+            const data = this.db.findByGlobalId(this.tableName, r.globalId);
+            if (data) {
+                items.push({ item: this.instanceFactory(data as Record<string, unknown>), distance: r.distance });
+            }
+        }
+        return items;
     }
 
     /**
@@ -162,7 +266,9 @@ export class Results<T> implements AsyncIterable<T> {
                 this.whereClause,
                 this.orderByClause,
                 batchSize,
-                offset
+                offset,
+                this.groupByClause,
+                this.distinctByClause
             );
 
             if (batch.length === 0) break;
@@ -214,6 +320,7 @@ export class Results<T> implements AsyncIterable<T> {
     async toArray(): Promise<T[]> {
         return this.snapshot();
     }
+
 }
 
 /**

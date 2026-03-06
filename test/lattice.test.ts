@@ -8,11 +8,19 @@ import {
     model,
     link,
     list,
+    indexed,
+    fullText,
+    vector,
+    embedded,
+    enumValue,
+    unique,
+    compoundUnique,
     isModel,
     getTableName,
     buildSchemas,
     discoverModels,
 } from '../src/decorators';
+import { QueryNode, createQueryProxy } from '../src/query';
 
 // ============================================================================
 // Test Models (matching Swift test models)
@@ -187,6 +195,110 @@ describe('Schema Extraction', () => {
         // Null defaults
         expect(schema?.properties.find(p => p.name === 'stringOpt')?.nullable).toBe(true);
     });
+
+    it('extracts indexed property flag', () => {
+        @model
+        class IndexedModel {
+            email = indexed('')
+            name = ''
+        }
+        const schemas = buildSchemas([IndexedModel]);
+        const schema = schemas.find(s => s.tableName === 'IndexedModel');
+        expect(schema?.properties.find(p => p.name === 'email')?.isIndexed).toBe(true);
+        expect(schema?.properties.find(p => p.name === 'email')?.type).toBe('string');
+        expect(schema?.properties.find(p => p.name === 'name')?.isIndexed).toBeFalsy();
+    });
+
+    it('extracts fullText property flag', () => {
+        @model
+        class FTSModel {
+            content = fullText('')
+        }
+        const schemas = buildSchemas([FTSModel]);
+        const schema = schemas.find(s => s.tableName === 'FTSModel');
+        expect(schema?.properties.find(p => p.name === 'content')?.isFullText).toBe(true);
+        expect(schema?.properties.find(p => p.name === 'content')?.type).toBe('string');
+    });
+
+    it('extracts vector property as blob with isVector flag', () => {
+        @model
+        class VecModel {
+            embedding = vector(384)
+        }
+        const schemas = buildSchemas([VecModel]);
+        const schema = schemas.find(s => s.tableName === 'VecModel');
+        const embeddingProp = schema?.properties.find(p => p.name === 'embedding');
+        expect(embeddingProp?.type).toBe('blob');
+        expect(embeddingProp?.isVector).toBe(true);
+    });
+
+    it('extracts embedded model as string type', () => {
+        class Address {
+            street = '';
+            city = '';
+        }
+        @model
+        class EmbeddedModel {
+            address = embedded(Address)
+        }
+        const schemas = buildSchemas([EmbeddedModel]);
+        const schema = schemas.find(s => s.tableName === 'EmbeddedModel');
+        const addrProp = schema?.properties.find(p => p.name === 'address');
+        expect(addrProp?.type).toBe('string');
+        expect(addrProp?.nullable).toBe(true);
+    });
+
+    it('extracts string enum as string type', () => {
+        enum Status { Active = 'active', Inactive = 'inactive' }
+        @model
+        class EnumModel {
+            status = enumValue(Status, Status.Active)
+        }
+        const schemas = buildSchemas([EnumModel]);
+        const schema = schemas.find(s => s.tableName === 'EnumModel');
+        const statusProp = schema?.properties.find(p => p.name === 'status');
+        expect(statusProp?.type).toBe('string');
+    });
+
+    it('extracts numeric enum as int type', () => {
+        enum Priority { Low = 0, Medium = 1, High = 2 }
+        @model
+        class NumEnumModel {
+            priority = enumValue(Priority, Priority.Medium)
+        }
+        const schemas = buildSchemas([NumEnumModel]);
+        const schema = schemas.find(s => s.tableName === 'NumEnumModel');
+        const priorityProp = schema?.properties.find(p => p.name === 'priority');
+        expect(priorityProp?.type).toBe('int');
+    });
+
+    it('extracts unique constraints', () => {
+        @model
+        class UniqueModel {
+            @unique()
+            email = ''
+            name = ''
+        }
+        const schemas = buildSchemas([UniqueModel]);
+        const schema = schemas.find(s => s.tableName === 'UniqueModel');
+        expect(schema?.constraints).toBeDefined();
+        expect(schema?.constraints?.length).toBe(1);
+        expect(schema?.constraints?.[0].columns).toEqual(['email']);
+    });
+
+    it('extracts compound unique constraints', () => {
+        @compoundUnique(['firstName', 'lastName'])
+        @model
+        class CompoundModel {
+            firstName = ''
+            lastName = ''
+        }
+        const schemas = buildSchemas([CompoundModel]);
+        const schema = schemas.find(s => s.tableName === 'CompoundModel');
+        expect(schema?.constraints).toBeDefined();
+        expect(schema?.constraints?.length).toBe(1);
+        expect(schema?.constraints?.[0].columns).toEqual(['firstName', 'lastName']);
+    });
 });
 
 // ============================================================================
@@ -257,73 +369,112 @@ describe('Schema Building', () => {
 });
 
 // ============================================================================
+// Query Builder Tests (no WASM needed)
+// ============================================================================
+
+describe('Query Builder', () => {
+    interface TestModel {
+        name: string;
+        age: number;
+        email: string;
+        active: boolean;
+        createdAt: Date;
+    }
+
+    it('generates eq SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.name.eq('John').toSQL()).toBe("name = 'John'");
+        expect(q.age.eq(30).toSQL()).toBe("age = 30");
+    });
+
+    it('generates neq SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.name.neq('John').toSQL()).toBe("name != 'John'");
+    });
+
+    it('generates gt/gte/lt/lte SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.age.gt(18).toSQL()).toBe('age > 18');
+        expect(q.age.gte(18).toSQL()).toBe('age >= 18');
+        expect(q.age.lt(65).toSQL()).toBe('age < 65');
+        expect(q.age.lte(65).toSQL()).toBe('age <= 65');
+    });
+
+    it('generates contains/startsWith/endsWith SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.name.contains('oh').toSQL()).toBe("name LIKE '%oh%'");
+        expect(q.name.startsWith('Jo').toSQL()).toBe("name LIKE 'Jo%'");
+        expect(q.name.endsWith('hn').toSQL()).toBe("name LIKE '%hn'");
+    });
+
+    it('generates like SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.name.like('J%n').toSQL()).toBe("name LIKE 'J%n'");
+    });
+
+    it('generates in SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.name.in(['John', 'Jane']).toSQL()).toBe("name IN ('John', 'Jane')");
+        expect(q.age.in([20, 30, 40]).toSQL()).toBe('age IN (20, 30, 40)');
+    });
+
+    it('generates between SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.age.between(18, 65).toSQL()).toBe('age BETWEEN 18 AND 65');
+    });
+
+    it('generates isNull/isNotNull SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.email.isNull().toSQL()).toBe('email IS NULL');
+        expect(q.email.isNotNull().toSQL()).toBe('email IS NOT NULL');
+    });
+
+    it('generates eq(null) as IS NULL', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.email.eq(null).toSQL()).toBe('email IS NULL');
+        expect(q.email.neq(null).toSQL()).toBe('email IS NOT NULL');
+    });
+
+    it('generates and/or combinations', () => {
+        const q = createQueryProxy<TestModel>();
+        const node = q.age.gte(18).and(q.name.startsWith('J'));
+        expect(node.toSQL()).toBe("(age >= 18) AND (name LIKE 'J%')");
+    });
+
+    it('generates complex nested queries', () => {
+        const q = createQueryProxy<TestModel>();
+        const node = q.age.gte(18).and(
+            q.name.eq('John').or(q.name.eq('Jane'))
+        );
+        expect(node.toSQL()).toBe("(age >= 18) AND ((name = 'John') OR (name = 'Jane'))");
+    });
+
+    it('generates not() SQL', () => {
+        const q = createQueryProxy<TestModel>();
+        const node = q.active.eq(true).not();
+        expect(node.toSQL()).toBe('NOT (active = 1)');
+    });
+
+    it('escapes single quotes in strings', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.name.eq("O'Brien").toSQL()).toBe("name = 'O''Brien'");
+    });
+
+    it('handles boolean values', () => {
+        const q = createQueryProxy<TestModel>();
+        expect(q.active.eq(true).toSQL()).toBe('active = 1');
+        expect(q.active.eq(false).toSQL()).toBe('active = 0');
+    });
+});
+
+// ============================================================================
 // Integration Tests (require browser environment)
 // ============================================================================
 
 describe.skip('Integration Tests (Browser Required)', () => {
-    // These tests would use the full Lattice class with WASM
-    // They need to run in a browser environment with:
-    // - SharedArrayBuffer support (COOP/COEP headers)
-    // - Web Workers
-    // - OPFS or IndexedDB for persistence
-
-    it('test_SimpleExample', async () => {
-        // const lattice = await Lattice.open(':memory:', [Person]);
-        // const person = new Person();
-        // person.name = 'John';
-        // person.age = 30;
-        // await lattice.add(person);
-        // expect(person.age).toBe(30);
-    });
-
-    it('test_ResultsQuery', async () => {
-        // const lattice = await Lattice.open(':memory:', [Person]);
-        // await lattice.add(Object.assign(new Person(), { name: 'John', age: 30 }));
-        // await lattice.add(Object.assign(new Person(), { name: 'Jane', age: 25 }));
-        // await lattice.add(Object.assign(new Person(), { name: 'Tim', age: 22 }));
-        //
-        // const persons = await lattice.objects(Person);
-        // expect(persons.length).toBe(3);
-        //
-        // const filtered = await lattice.objects(Person, {
-        //     where: "name = 'John' OR name = 'Jane'"
-        // });
-        // expect(filtered.length).toBe(2);
-    });
-
-    it('test_Link', async () => {
-        // const lattice = await Lattice.open(':memory:', [Person, Dog]);
-        // const person = new Person();
-        // await lattice.add(person);
-        // expect(person.dog).toBeNull();
-        //
-        // const dog = new Dog();
-        // dog.name = 'max';
-        // person.dog = dog;
-        // expect(person.dog?.name).toBe('max');
-    });
-
-    it('test_LinkList', async () => {
-        // const lattice = await Lattice.open(':memory:', [Dog]);
-        // const dog = new Dog();
-        // const fido = Object.assign(new Dog(), { name: 'fido' });
-        // const spot = Object.assign(new Dog(), { name: 'spot' });
-        // dog.puppies.push(fido, spot);
-        // await lattice.add(dog);
-        // expect(dog.puppies.length).toBe(2);
-    });
-
-    it('test_BulkInsert', async () => {
-        // const lattice = await Lattice.open(':memory:', [Person]);
-        // const people = Array.from({ length: 1000 }, (_, i) => {
-        //     const p = new Person();
-        //     p.age = i;
-        //     return p;
-        // });
-        // await lattice.write(async () => {
-        //     for (const p of people) await lattice.add(p);
-        // });
-        // const count = await lattice.count(Person);
-        // expect(count).toBe(1000);
-    });
+    it('test_SimpleExample', async () => {});
+    it('test_ResultsQuery', async () => {});
+    it('test_Link', async () => {});
+    it('test_LinkList', async () => {});
+    it('test_BulkInsert', async () => {});
 });

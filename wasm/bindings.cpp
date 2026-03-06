@@ -86,10 +86,10 @@ static std::shared_ptr<emscripten_scheduler> g_emscripten_scheduler = std::make_
 
 #include <lattice/network.hpp>
 
-class emscripten_websocket_client : public websocket_client {
+class emscripten_websocket_client : public sync_transport {
 private:
     val ws_ = val::null();
-    websocket_state state_ = websocket_state::closed;
+    transport_state state_ = transport_state::closed;
 
     on_open_handler on_open_;
     on_message_handler on_message_;
@@ -110,7 +110,7 @@ public:
             disconnect();
         }
 
-        state_ = websocket_state::connecting;
+        state_ = transport_state::connecting;
 
         // Browser WebSocket doesn't support custom headers
         // Pass Authorization token as query parameter instead
@@ -139,8 +139,6 @@ public:
         ws_.set("binaryType", val("arraybuffer"));
 
         // Set up event handlers
-        auto* self = this;
-
         ws_.set("onopen", val::module_property("_ws_onopen_handler"));
         ws_.set("onmessage", val::module_property("_ws_onmessage_handler"));
         ws_.set("onerror", val::module_property("_ws_onerror_handler"));
@@ -156,15 +154,15 @@ public:
             ws_.call<void>("close");
             ws_ = val::null();
         }
-        state_ = websocket_state::closed;
+        state_ = transport_state::closed;
     }
 
-    websocket_state state() const override {
+    transport_state state() const override {
         return state_;
     }
 
-    void send(const websocket_message& message) override {
-        if (ws_.isNull() || state_ != websocket_state::open) {
+    void send(const transport_message& message) override {
+        if (ws_.isNull() || state_ != transport_state::open) {
             printf("[emscripten_ws] Cannot send - not connected\n");
             return;
         }
@@ -174,7 +172,6 @@ public:
         val buffer = Uint8Array.new_(val(message.data.size()));
 
         // Copy data to JS array
-        val memory = val::module_property("HEAPU8");
         for (size_t i = 0; i < message.data.size(); i++) {
             buffer.set(i, val(message.data[i]));
         }
@@ -191,7 +188,7 @@ public:
     // Called from JS handlers
     void handle_open() {
         printf("[emscripten_ws] Connected!\n");
-        state_ = websocket_state::open;
+        state_ = transport_state::open;
         if (on_open_) {
             g_emscripten_scheduler->invoke([this]() { on_open_(); });
         }
@@ -200,7 +197,7 @@ public:
     void handle_message(val event) {
         val data = event["data"];
 
-        websocket_message msg;
+        transport_message msg;
 
         if (data.instanceof(val::global("ArrayBuffer"))) {
             // Binary message
@@ -208,7 +205,7 @@ public:
             val arr = Uint8Array.new_(data);
             size_t len = arr["length"].as<size_t>();
 
-            msg.msg_type = websocket_message::type::binary;
+            msg.msg_type = transport_message::type::binary;
             msg.data.resize(len);
             for (size_t i = 0; i < len; i++) {
                 msg.data[i] = arr[i].as<uint8_t>();
@@ -217,7 +214,7 @@ public:
         } else {
             // Text message
             std::string text = data.as<std::string>();
-            msg.msg_type = websocket_message::type::text;
+            msg.msg_type = transport_message::type::text;
             msg.data = std::vector<uint8_t>(text.begin(), text.end());
             printf("[emscripten_ws] Received text message: %zu chars\n", text.size());
         }
@@ -239,7 +236,7 @@ public:
         std::string reason = event["reason"].as<std::string>();
         printf("[emscripten_ws] Closed: code=%d reason=%s\n", code, reason.c_str());
 
-        state_ = websocket_state::closed;
+        state_ = transport_state::closed;
         ws_ = val::null();
 
         if (on_close_) {
@@ -325,8 +322,8 @@ public:
         return std::make_unique<null_http_client>();
     }
 
-    std::unique_ptr<websocket_client> create_websocket_client() override {
-        printf("[emscripten_network_factory] Creating websocket client\n");
+    std::unique_ptr<sync_transport> create_sync_transport() override {
+        printf("[emscripten_network_factory] Creating sync transport\n");
         return std::make_unique<emscripten_websocket_client>();
     }
 };
@@ -735,6 +732,8 @@ property_descriptor js_to_property_descriptor(const val& prop) {
     desc.target_table = prop["targetTable"].isUndefined() ? "" : prop["targetTable"].as<std::string>();
     desc.nullable = prop["nullable"].isUndefined() ? true : prop["nullable"].as<bool>();
     desc.is_vector = prop["isVector"].isUndefined() ? false : prop["isVector"].as<bool>();
+    desc.is_full_text = prop["isFullText"].isUndefined() ? false : prop["isFullText"].as<bool>();
+    desc.is_indexed = prop["isIndexed"].isUndefined() ? false : prop["isIndexed"].as<bool>();
 
     return desc;
 }
@@ -757,6 +756,23 @@ SchemaVector js_to_schema_vector(const val& schemas) {
         for (size_t j = 0; j < props_length; j++) {
             auto desc = js_to_property_descriptor(props[j]);
             entry.properties[desc.name] = desc;
+        }
+
+        // Read constraints (unique constraints)
+        if (!schema["constraints"].isUndefined()) {
+            val constraints = schema["constraints"];
+            auto constraints_length = constraints["length"].as<size_t>();
+            for (size_t k = 0; k < constraints_length; k++) {
+                val c = constraints[k];
+                swift_constraint constraint;
+                val cols = c["columns"];
+                auto cols_length = cols["length"].as<size_t>();
+                for (size_t l = 0; l < cols_length; l++) {
+                    constraint.columns.push_back(cols[l].as<std::string>());
+                }
+                constraint.allows_upsert = c["allowsUpsert"].isUndefined() ? false : c["allowsUpsert"].as<bool>();
+                entry.constraints.push_back(constraint);
+            }
         }
 
         result.push_back(entry);
@@ -997,6 +1013,72 @@ public:
         }
     }
 
+    // Constructor with migration support
+    JsLattice(const std::string& path, const val& schemas,
+              const std::string& websocket_url, const std::string& auth_token,
+              int32_t schema_version, val migration_callback) {
+        try {
+            if (!websocket_url.empty()) {
+                init_emscripten_network();
+            }
+
+            configuration config(path, g_emscripten_scheduler);
+            config.target_schema_version = schema_version;
+
+            if (!websocket_url.empty()) {
+                config.websocket_url = websocket_url;
+                config.authorization_token = auth_token;
+            }
+
+            auto schema_vec = js_to_schema_vector(schemas);
+
+            if (!migration_callback.isNull() && !migration_callback.isUndefined()) {
+                // Use create_with_migration
+                auto* stored_callback = new val(migration_callback);
+                swift_migration_block_t block = [stored_callback](swift_migration_context_ref* ctx) {
+                    // Convert swift_migration_context_ref to JS object
+                    val js_ctx = val::object();
+
+                    // pendingChanges()
+                    auto changes = ctx->pending_changes();
+                    val js_changes = val::array();
+                    for (const auto& tc : changes) {
+                        val change = val::object();
+                        change.set("tableName", val(tc.table_name));
+                        val added = val::array();
+                        for (const auto& c : tc.added_columns) added.call<void>("push", val(c));
+                        change.set("addedColumns", added);
+                        val removed = val::array();
+                        for (const auto& c : tc.removed_columns) removed.call<void>("push", val(c));
+                        change.set("removedColumns", removed);
+                        val changed = val::array();
+                        for (const auto& c : tc.changed_columns) changed.call<void>("push", val(c));
+                        change.set("changedColumns", changed);
+                        js_changes.call<void>("push", change);
+                    }
+                    js_ctx.set("pendingChanges", js_changes);
+
+                    // hasChangesFor(tableName)
+                    js_ctx.set("hasChangesFor", val::module_property("_migration_has_changes_for"));
+
+                    // renameProperty(tableName, old, new)
+                    js_ctx.set("_ctx_ptr", val(reinterpret_cast<uintptr_t>(ctx)));
+                    js_ctx.set("renameProperty", val::module_property("_migration_rename_property"));
+                    js_ctx.set("deleteAll", val::module_property("_migration_delete_all"));
+                    js_ctx.set("executeSql", val::module_property("_migration_execute_sql"));
+
+                    (*stored_callback)(js_ctx);
+                };
+                ref_ = swift_lattice_ref::create_with_migration(config, schema_vec, block);
+                delete stored_callback;
+            } else {
+                ref_ = swift_lattice_ref::create(config, schema_vec);
+            }
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("Failed to open database with migration: ") + e.what());
+        }
+    }
+
     ~JsLattice() {
         if (ref_) {
             releaseSwiftLatticeRef(ref_);
@@ -1087,7 +1169,9 @@ public:
                 const val& where_clause,
                 const val& order_by,
                 const val& limit,
-                const val& offset) {
+                const val& offset,
+                const val& group_by,
+                const val& distinct_by) {
         try {
             OptionalString where = where_clause.isNull() || where_clause.isUndefined()
                 ? std::nullopt : std::optional<std::string>(where_clause.as<std::string>());
@@ -1097,8 +1181,12 @@ public:
                 ? std::nullopt : std::optional<int64_t>(limit.as<int64_t>());
             OptionalInt64 off = offset.isNull() || offset.isUndefined()
                 ? std::nullopt : std::optional<int64_t>(offset.as<int64_t>());
+            OptionalString group = group_by.isNull() || group_by.isUndefined()
+                ? std::nullopt : std::optional<std::string>(group_by.as<std::string>());
+            OptionalString distinct_ = distinct_by.isNull() || distinct_by.isUndefined()
+                ? std::nullopt : std::optional<std::string>(distinct_by.as<std::string>());
 
-            auto results = ref_->get()->objects(table_name, where, order, lim, off);
+            auto results = ref_->get()->objects(table_name, where, order, lim, off, group, distinct_);
             auto* schema = ref_->get()->get_properties_for_table(table_name);
 
             val arr = val::array();
@@ -1120,11 +1208,16 @@ public:
     }
 
     // Count objects in a table
-    size_t count(const std::string& table_name, const val& where_clause) {
+    size_t count(const std::string& table_name, const val& where_clause,
+                 const val& group_by, const val& distinct_by) {
         try {
             OptionalString where = where_clause.isNull() || where_clause.isUndefined()
                 ? std::nullopt : std::optional<std::string>(where_clause.as<std::string>());
-            return ref_->get()->count(table_name, where);
+            OptionalString group = group_by.isNull() || group_by.isUndefined()
+                ? std::nullopt : std::optional<std::string>(group_by.as<std::string>());
+            OptionalString distinct_ = distinct_by.isNull() || distinct_by.isUndefined()
+                ? std::nullopt : std::optional<std::string>(distinct_by.as<std::string>());
+            return ref_->get()->count(table_name, where, group, distinct_);
         } catch (const std::exception& e) {
             throw_js_error(std::string("count failed: ") + e.what());
         } catch (...) {
@@ -1546,35 +1639,35 @@ public:
     uint64_t observeAuditLog(val callback) {
         try {
             printf("[observeAuditLog] Registering observer...\n");
-            // Store the callback so it persists
-            auto* stored_callback = new val(callback);
 
-            // Observe the AuditLog table
-            auto observer_id = ref_->get()->add_table_observer("AuditLog", stored_callback,
-                [this](void* context, const std::string& operation, int64_t row_id, const std::string& global_id) {
-                    auto* stored_callback = static_cast<val*>(context);
+            // We need to pass both the JS callback AND the lattice ref to the C callback.
+            // Bundle them in a struct since add_table_observer takes a single void* context.
+            struct AuditLogContext {
+                val* callback;
+                swift_lattice_ref* lattice_ref;
+            };
+            auto* ctx = new AuditLogContext{new val(callback), ref_};
+
+            auto observer_id = ref_->get()->add_table_observer("AuditLog", ctx,
+                [](void* context, const char* operation, int64_t row_id, const char* global_id) {
+                    auto* ctx = static_cast<AuditLogContext*>(context);
                     printf("[observeAuditLog] Callback fired: op=%s row_id=%lld global_id=%s\n",
-                           operation.c_str(), (long long)row_id, global_id.c_str());
+                           operation, (long long)row_id, global_id);
 
-                    // Handle INSERT, UPDATE, and DELETE operations on AuditLog
-                    // (All represent changes we need to propagate)
-                    if (operation != "INSERT") {
-                        printf("[observeAuditLog] Skipping %s (only INSERT creates new audit entries)\n", operation.c_str());
+                    if (std::string(operation) != "INSERT") {
+                        printf("[observeAuditLog] Skipping %s (only INSERT creates new audit entries)\n", operation);
                         return;
                     }
 
-                    // Query all unsynced entries, but ONLY return the specific entry that
-                    // triggered this callback. This prevents an infinite loop where receiving
-                    // a remote change would re-broadcast all pending local changes.
-                    auto all_entries = query_audit_log(ref_->get()->db(), true, std::nullopt);
+                    auto all_entries = query_audit_log(ctx->lattice_ref->get()->db(), true, std::nullopt);
                     printf("[observeAuditLog] Queried %zu total entries, filtering for global_id=%s\n",
-                           all_entries.size(), global_id.c_str());
+                           all_entries.size(), global_id);
 
-                    // Build JSON with only the entry that triggered this callback
                     std::string json = "[";
                     bool found = false;
+                    std::string gid(global_id);
                     for (const auto& entry : all_entries) {
-                        if (entry.global_id == global_id) {
+                        if (entry.global_id == gid) {
                             json += entry.to_json();
                             found = true;
                             break;
@@ -1583,16 +1676,20 @@ public:
                     json += "]";
 
                     if (!found) {
-                        printf("[observeAuditLog] Entry with global_id=%s not found in unsynced entries\n", global_id.c_str());
+                        printf("[observeAuditLog] Entry with global_id=%s not found in unsynced entries\n", global_id);
                     }
 
-                    // Call JS callback with the JSON
                     printf("[observeAuditLog] Calling JS callback, found=%d\n", found ? 1 : 0);
-                    (*stored_callback)(json);
+                    (*(ctx->callback))(json);
+                },
+                [](void* context) {
+                    auto* ctx = static_cast<AuditLogContext*>(context);
+                    delete ctx->callback;
+                    delete ctx;
                 });
 
-            // Store callback reference for cleanup
-            observer_callbacks_[observer_id] = stored_callback;
+            // Store callback reference for cleanup (destroy callback handles actual deletion)
+            observer_callbacks_[observer_id] = ctx->callback;
             printf("[observeAuditLog] Observer registered with id=%llu\n", (unsigned long long)observer_id);
 
             return observer_id;
@@ -1616,6 +1713,283 @@ public:
         } catch (const std::exception& e) {
             printf("[removeAuditLogObserver] Error: %s\n", e.what());
         }
+    }
+
+    // ========================================================================
+    // Bulk Insert
+    // ========================================================================
+
+    val addBulk(const std::string& table_name, const val& js_array) {
+        try {
+            auto length = js_array["length"].as<size_t>();
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+            if (!schema) {
+                throw_js_error("Unknown table: " + table_name);
+                return val::array();
+            }
+
+            ref_->get()->begin_transaction();
+
+            val result = val::array();
+            for (size_t i = 0; i < length; i++) {
+                val js_obj = js_array[i];
+
+                // Create swift_dynamic_object the same way as add()
+                swift_dynamic_object unmanaged_obj(table_name, *schema);
+                auto* obj_ref = new dynamic_object_ref(unmanaged_obj);
+                retainDynamicObjectRef(obj_ref);
+
+                js_to_dynamic_object(obj_ref, js_obj, schema, ref_->get());
+                ref_->get()->add(*obj_ref->get());
+
+                val entry = val::object();
+                entry.set("id", val(static_cast<double>(obj_ref->get_int("id"))));
+                entry.set("globalId", val(obj_ref->get_string("globalId")));
+                result.call<void>("push", entry);
+
+                releaseDynamicObjectRef(obj_ref);
+            }
+
+            ref_->get()->commit();
+            return result;
+        } catch (const std::exception& e) {
+            ref_->get()->rollback();
+            throw_js_error(std::string("addBulk failed: ") + e.what());
+        }
+        return val::array();
+    }
+
+    // ========================================================================
+    // Fine-grained Observation
+    // ========================================================================
+
+    uint64_t observeTable(const std::string& table_name, val callback) {
+        try {
+            auto* stored_callback = new val(callback);
+            auto observer_id = ref_->get()->add_table_observer(table_name, stored_callback,
+                [](void* context, const char* operation, int64_t row_id, const char* global_row_id) {
+                    auto* cb = static_cast<val*>(context);
+                    val entry = val::object();
+                    entry.set("operation", val(std::string(operation)));
+                    entry.set("rowId", val(static_cast<double>(row_id)));
+                    entry.set("globalRowId", val(std::string(global_row_id)));
+                    (*cb)(entry);
+                });
+            observer_callbacks_[observer_id] = stored_callback;
+            return observer_id;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("observeTable failed: ") + e.what());
+        }
+        return 0;
+    }
+
+    void removeTableObserver(const std::string& table_name, uint64_t observer_id) {
+        try {
+            ref_->get()->remove_table_observer(table_name, observer_id);
+            auto it = observer_callbacks_.find(observer_id);
+            if (it != observer_callbacks_.end()) {
+                delete it->second;
+                observer_callbacks_.erase(it);
+            }
+        } catch (const std::exception& e) {
+            printf("[removeTableObserver] Error: %s\n", e.what());
+        }
+    }
+
+    uint64_t observeObject(const std::string& table_name, int64_t row_id, val callback) {
+        try {
+            auto* stored_callback = new val(callback);
+            auto observer_id = ref_->get()->add_object_observer(table_name, row_id, stored_callback,
+                [](const char* changed_fields_names, void* context) {
+                    auto* cb = static_cast<val*>(context);
+                    (*cb)(val(std::string(changed_fields_names)));
+                });
+            observer_callbacks_[observer_id] = stored_callback;
+            return observer_id;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("observeObject failed: ") + e.what());
+        }
+        return 0;
+    }
+
+    void removeObjectObserver(const std::string& table_name, int64_t row_id, uint64_t observer_id) {
+        try {
+            ref_->get()->remove_object_observer(table_name, row_id, observer_id);
+            auto it = observer_callbacks_.find(observer_id);
+            if (it != observer_callbacks_.end()) {
+                delete it->second;
+                observer_callbacks_.erase(it);
+            }
+        } catch (const std::exception& e) {
+            printf("[removeObjectObserver] Error: %s\n", e.what());
+        }
+    }
+
+    // ========================================================================
+    // FTS5 Full-Text Search
+    // ========================================================================
+
+    val ftsQuery(const std::string& table_name, const std::string& column_name,
+                 const std::string& search_text, int limit) {
+        try {
+            // FTS5 virtual table is named _{table}_{column}_fts
+            std::string fts_table = "_" + table_name + "_" + column_name + "_fts";
+            std::string sql =
+                "SELECT T.* FROM " + table_name + " T "
+                "JOIN " + fts_table + " fts ON T.id = fts.rowid "
+                "WHERE " + fts_table + " MATCH '" + search_text + "' "
+                "ORDER BY rank "
+                "LIMIT " + std::to_string(limit);
+
+            auto results = ref_->get()->objects(table_name,
+                "id IN (SELECT rowid FROM " + fts_table + " WHERE " + fts_table + " MATCH '" + search_text + "' ORDER BY rank LIMIT " + std::to_string(limit) + ")",
+                std::nullopt, std::nullopt, std::nullopt);
+            auto* schema = ref_->get()->get_properties_for_table(table_name);
+
+            val arr = val::array();
+            for (size_t i = 0; i < results.size(); i++) {
+                auto* obj_ref = new dynamic_object_ref(results[i]);
+                val js_obj = dynamic_object_to_js(obj_ref, schema);
+                js_obj.set("id", results[i].id());
+                js_obj.set("globalId", results[i].global_id());
+                arr.call<void>("push", js_obj);
+                delete obj_ref;
+            }
+            return arr;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("ftsQuery failed: ") + e.what());
+        }
+        return val::array();
+    }
+
+    // ========================================================================
+    // Vector Search (sqlite-vec nearest neighbors)
+    // ========================================================================
+
+    val nearestNeighbors(const std::string& table_name, const std::string& column_name,
+                         const val& query_vector_js, int k, int metric_int,
+                         const val& where_clause) {
+        try {
+            // Convert JS Float32Array to vector<uint8_t>
+            size_t vec_length = query_vector_js["length"].as<size_t>();
+            std::vector<float> float_vec(vec_length);
+            for (size_t i = 0; i < vec_length; i++) {
+                float_vec[i] = query_vector_js[i].as<float>();
+            }
+            // Reinterpret as bytes
+            std::vector<uint8_t> query_bytes(
+                reinterpret_cast<uint8_t*>(float_vec.data()),
+                reinterpret_cast<uint8_t*>(float_vec.data()) + float_vec.size() * sizeof(float));
+
+            auto results = ref_->get()->nearest_neighbors_ids(table_name, column_name, query_bytes, k, metric_int);
+
+            val arr = val::array();
+            for (const auto& r : results) {
+                val entry = val::object();
+                entry.set("globalId", val(r.global_id));
+                entry.set("distance", val(r.distance));
+                arr.call<void>("push", entry);
+            }
+            return arr;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("nearestNeighbors failed: ") + e.what());
+        }
+        return val::array();
+    }
+
+    // ========================================================================
+    // Sync Progress / Filters / Compaction
+    // ========================================================================
+
+    val getSyncProgress() {
+        try {
+            auto progress = ref_->get()->get_sync_progress();
+            val result = val::object();
+            result.set("pendingUpload", val(static_cast<double>(progress.pending_upload)));
+            result.set("totalUpload", val(static_cast<double>(progress.total_upload)));
+            result.set("acked", val(static_cast<double>(progress.acked)));
+            result.set("received", val(static_cast<double>(progress.received)));
+            return result;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("getSyncProgress failed: ") + e.what());
+        }
+        return val::object();
+    }
+
+    uint64_t onSyncProgress(val callback) {
+        try {
+            auto* stored_callback = new val(callback);
+            ref_->get()->set_on_sync_progress(stored_callback,
+                [](void* context, int64_t pending, int64_t total, int64_t acked, int64_t received) {
+                    auto* cb = static_cast<val*>(context);
+                    val progress = val::object();
+                    progress.set("pendingUpload", val(static_cast<double>(pending)));
+                    progress.set("totalUpload", val(static_cast<double>(total)));
+                    progress.set("acked", val(static_cast<double>(acked)));
+                    progress.set("received", val(static_cast<double>(received)));
+                    (*cb)(progress);
+                });
+            // Store for cleanup - use a special key
+            uint64_t key = reinterpret_cast<uintptr_t>(stored_callback);
+            observer_callbacks_[key] = stored_callback;
+            return key;
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("onSyncProgress failed: ") + e.what());
+        }
+        return 0;
+    }
+
+    void updateSyncFilter(const std::string& filter_json) {
+        try {
+            auto j = nlohmann::json::parse(filter_json);
+            std::vector<sync_filter_entry> filter;
+            for (const auto& entry : j) {
+                sync_filter_entry f;
+                f.table_name = entry["tableName"].get<std::string>();
+                if (entry.contains("whereClause") && !entry["whereClause"].is_null()) {
+                    f.where_clause = entry["whereClause"].get<std::string>();
+                }
+                filter.push_back(f);
+            }
+            ref_->get()->update_sync_filter(filter);
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("updateSyncFilter failed: ") + e.what());
+        }
+    }
+
+    void clearSyncFilter() {
+        try {
+            ref_->get()->clear_sync_filter();
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("clearSyncFilter failed: ") + e.what());
+        }
+    }
+
+    int64_t compactAuditLog() {
+        try {
+            return ref_->get()->force_compact_audit_log();
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("compactAuditLog failed: ") + e.what());
+        }
+        return 0;
+    }
+
+    int64_t safeCompactAuditLog(int64_t stale_threshold_seconds) {
+        try {
+            return ref_->get()->safe_compact_audit_log(stale_threshold_seconds);
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("safeCompactAuditLog failed: ") + e.what());
+        }
+        return 0;
+    }
+
+    int64_t generateHistory() {
+        try {
+            return ref_->get()->generate_history();
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("generateHistory failed: ") + e.what());
+        }
+        return 0;
     }
 
 private:
@@ -1766,6 +2140,7 @@ EMSCRIPTEN_BINDINGS(lattice) {
     class_<JsLattice>("Lattice")
         .constructor<std::string, val>()
         .constructor<std::string, val, std::string, std::string>()
+        .constructor<std::string, val, std::string, std::string, int32_t, val>()
         .function("add", &JsLattice::add)
         .function("addObject", &JsLattice::addObject)
         .function("find", &JsLattice::find)
@@ -1788,5 +2163,24 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("removeAuditLogObserver", &JsLattice::removeAuditLogObserver)
         // Server-side sync methods (for test server)
         .function("receive", &JsLattice::receive)
-        .function("eventsAfter", &JsLattice::eventsAfter);
+        .function("eventsAfter", &JsLattice::eventsAfter)
+        // Bulk insert
+        .function("addBulk", &JsLattice::addBulk)
+        // Fine-grained observation
+        .function("observeTable", &JsLattice::observeTable)
+        .function("removeTableObserver", &JsLattice::removeTableObserver)
+        .function("observeObject", &JsLattice::observeObject)
+        .function("removeObjectObserver", &JsLattice::removeObjectObserver)
+        // FTS5 full-text search
+        .function("ftsQuery", &JsLattice::ftsQuery)
+        // Vector search
+        .function("nearestNeighbors", &JsLattice::nearestNeighbors)
+        // Sync progress / filters / compaction
+        .function("getSyncProgress", &JsLattice::getSyncProgress)
+        .function("onSyncProgress", &JsLattice::onSyncProgress)
+        .function("updateSyncFilter", &JsLattice::updateSyncFilter)
+        .function("clearSyncFilter", &JsLattice::clearSyncFilter)
+        .function("compactAuditLog", &JsLattice::compactAuditLog)
+        .function("safeCompactAuditLog", &JsLattice::safeCompactAuditLog)
+        .function("generateHistory", &JsLattice::generateHistory);
 }

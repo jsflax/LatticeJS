@@ -52,4 +52,10 @@ export interface PropertySchema {
     defaultValue: any;
     targetModel?: any; // For link/list
     nullable?: boolean;
+    isVector?: boolean;
+    vectorDimensions?: number;
+    isFullText?: boolean;
+    isIndexed?: boolean;
+    embeddedClass?: new () => any;
+    enumObj?: Record<string, string | number>;
 }
