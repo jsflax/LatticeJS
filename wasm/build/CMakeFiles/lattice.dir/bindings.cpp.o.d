@@ -1,5 +1,5 @@
 CMakeFiles/lattice.dir/bindings.cpp.o: \
-  /Users/jason/Documents/LatticeJS/wasm/bindings.cpp \
+  /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/bindings.cpp \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/bind.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/cassert \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__config \
@@ -780,9 +780,10 @@ CMakeFiles/lattice.dir/bindings.cpp.o: \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/wget.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/version.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/sqlite3.h \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include/lattice.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/LatticeCpp.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/types.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/include/lattice.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/LatticeCore.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/log.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/types.hpp \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/chrono \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__chrono/file_clock.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__chrono/calendar.h \
@@ -924,10 +925,10 @@ CMakeFiles/lattice.dir/bindings.cpp.o: \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__random/student_t_distribution.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__random/weibull_distribution.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/iomanip \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/db.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/managed.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/observation.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/../nlohmann/json.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/db.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/managed.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/observation.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/../nlohmann/json.hpp \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/valarray \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/filesystem \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__filesystem/copy_options.h \
@@ -980,8 +981,8 @@ CMakeFiles/lattice.dir/bindings.cpp.o: \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__ranges/views.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__ranges/istream_view.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/any \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/schema.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/scheduler.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/schema.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/scheduler.hpp \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/thread \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__thread/this_thread.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__thread/thread.h \
@@ -994,15 +995,23 @@ CMakeFiles/lattice.dir/bindings.cpp.o: \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__stop_token/stop_token.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/condition_variable \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__stop_token/stop_callback.h \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/network.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/sync.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeCpp/include/lattice/lattice.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/network.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/sync.hpp \
+  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/unordered_set \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/lattice.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/cross_process_notifier.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeCore/include/lattice/ipc.hpp \
+  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/set \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/iostream \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include/bridging.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include/dynamic_object.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include/unmanaged_object.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include/managed_object.hpp \
-  /Users/jason/Documents/LatticeJS/wasm/../../LatticeCpp/Sources/LatticeSwiftCppBridge/include/list.hpp \
+  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/sys/file.h \
+  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/fcntl.h \
+  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/bits/fcntl.h \
+  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/bits/posix.h \
+  /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/include/bridging.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/include/dynamic_object.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/include/unmanaged_object.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/include/managed_object.hpp \
+  /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/include/list.hpp \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/compat/sys/stat.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/bits/stat.h

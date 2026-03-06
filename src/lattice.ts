@@ -1,5 +1,5 @@
 // Main Lattice class - user-facing API
-import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule } from './types';
+import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
@@ -111,6 +111,8 @@ export class Lattice {
                 websocketUrl: string;
                 authToken?: string;
             };
+            schemaVersion?: number;
+            migration?: (ctx: MigrationContext) => void;
         }
     ): Promise<Lattice> {
         // Build schemas from models
@@ -144,12 +146,47 @@ export class Lattice {
 
         const isInMemory = path === ':memory:' || path.startsWith(':memory:');
         const syncConfig = options?.sync;
+        const schemaVersion = options?.schemaVersion;
+        const migrationFn = options?.migration;
 
         if (isInMemory) {
             // In-memory: just use main thread
             console.log('[Lattice] Creating in-memory database');
             let db;
-            if (syncConfig?.websocketUrl) {
+            if (schemaVersion && migrationFn) {
+                // Migration-aware constructor
+                const jsMigrationCallback = (ctx: any) => {
+                    const migrationCtx: MigrationContext = {
+                        pendingChanges: () => ctx.pendingChanges as TableChanges[],
+                        hasChangesFor: (tableName: string) => {
+                            return (ctx.pendingChanges as TableChanges[]).some(
+                                (c: TableChanges) => c.tableName === tableName &&
+                                    (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
+                            );
+                        },
+                        renameProperty: (tableName: string, oldName: string, newName: string) => {
+                            // Call C++ via the context pointer
+                            wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
+                        },
+                        deleteAll: (tableName: string) => {
+                            wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
+                        },
+                        executeSql: (sql: string) => {
+                            wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
+                        },
+                        enumerateObjects: () => {
+                            // Complex operation — not exposed in initial version
+                            console.warn('enumerateObjects not yet supported in WASM migrations');
+                        },
+                    };
+                    migrationFn(migrationCtx);
+                };
+                db = new wasmModule.Lattice(
+                    path, schemas,
+                    syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
+                    schemaVersion, jsMigrationCallback
+                );
+            } else if (syncConfig?.websocketUrl) {
                 console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
                 db = new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
             } else {
@@ -402,6 +439,145 @@ export class Lattice {
         const tableName = getTableName(modelClass);
         const numId = typeof id === 'bigint' ? Number(id) : id;
         return this.db.remove(tableName, numId);
+    }
+
+    /**
+     * Add multiple model instances in a single transaction.
+     * Much faster than calling add() in a loop.
+     *
+     * @returns The instances with id and globalId populated.
+     */
+    async addAll<T extends LatticeObject>(instances: T[]): Promise<T[]> {
+        if (instances.length === 0) return [];
+
+        const modelClass = instances[0].constructor as ModelConstructor;
+        if (!isModel(modelClass)) {
+            throw new Error(`${modelClass.name} is not a @model`);
+        }
+
+        const tableName = getTableName(modelClass);
+
+        // Build array of plain objects from dynamic objects
+        const jsArray: Record<string, any>[] = [];
+        for (const instance of instances) {
+            const dynObj = (instance as any)[DYNAMIC_OBJECT];
+            if (!dynObj || !dynObj.isValid()) {
+                throw new Error(`${modelClass.name} has no C++ backing`);
+            }
+            jsArray.push(dynObj);
+        }
+
+        // Use bulk insert
+        const results = this.db.addBulk(tableName, jsArray);
+
+        // Populate ids on instances
+        for (let i = 0; i < instances.length; i++) {
+            (instances[i] as any)[LATTICE_REF] = this;
+        }
+
+        return instances;
+    }
+
+    // ========================================================================
+    // Fine-grained Observation
+    // ========================================================================
+
+    /**
+     * Observe changes to a specific table.
+     * Callback fires for every INSERT, UPDATE, DELETE on the table.
+     *
+     * @returns Unsubscribe function
+     */
+    observeTable<T>(
+        modelClass: ModelConstructor<T>,
+        callback: (change: CollectionChange) => void
+    ): () => void {
+        const tableName = getTableName(modelClass);
+        const observerId = this.db.observeTable(tableName, callback);
+        return () => {
+            this.db.removeTableObserver(tableName, observerId);
+        };
+    }
+
+    /**
+     * Observe changes to a specific object instance.
+     * Callback fires with the names of changed fields.
+     *
+     * @returns Unsubscribe function
+     */
+    observeObject<T>(
+        modelClass: ModelConstructor<T>,
+        instance: T,
+        callback: (changedFieldNames: string[]) => void
+    ): () => void {
+        const tableName = getTableName(modelClass);
+        const id = (instance as any).id;
+        if (!id) throw new Error('Cannot observe object without an id');
+
+        const observerId = this.db.observeObject(tableName, id, (changedFields: string) => {
+            callback(changedFields.split(',').filter(s => s.length > 0));
+        });
+        return () => {
+            this.db.removeObjectObserver(tableName, id, observerId);
+        };
+    }
+
+    // ========================================================================
+    // Sync Progress / Filters / Compaction
+    // ========================================================================
+
+    /**
+     * Get current sync progress.
+     */
+    getSyncProgress(): SyncProgress {
+        return this.db.getSyncProgress();
+    }
+
+    /**
+     * Observe sync progress changes.
+     * @returns Unsubscribe function
+     */
+    onSyncProgress(callback: (progress: SyncProgress) => void): () => void {
+        const observerId = this.db.onSyncProgress(callback);
+        return () => {
+            // Note: removal handled by C++ when observer is destroyed
+        };
+    }
+
+    /**
+     * Update sync filter — only specified tables (and optional where clauses) will sync.
+     */
+    updateSyncFilter(filters: SyncFilter[]): void {
+        this.db.updateSyncFilter(JSON.stringify(filters));
+    }
+
+    /**
+     * Clear all sync filters (sync everything).
+     */
+    clearSyncFilter(): void {
+        this.db.clearSyncFilter();
+    }
+
+    /**
+     * Force compact the audit log (removes synced entries).
+     */
+    compactAuditLog(): void {
+        this.db.compactAuditLog();
+    }
+
+    /**
+     * Safely compact stale audit log entries.
+     * @param staleSeconds - Only compact entries older than this many seconds
+     */
+    safeCompactAuditLog(staleSeconds: number): void {
+        this.db.safeCompactAuditLog(staleSeconds);
+    }
+
+    /**
+     * Generate history from current database state.
+     */
+    generateHistory(): void {
+        this.db.generateHistory();
     }
 
     /**

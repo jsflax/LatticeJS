@@ -57,10 +57,10 @@ RM = /opt/homebrew/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /Users/jason/Documents/LatticeJS/wasm
+CMAKE_SOURCE_DIR = /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /Users/jason/Documents/LatticeJS/wasm/build
+CMAKE_BINARY_DIR = /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles /Users/jason/Documents/LatticeJS/wasm/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -129,269 +129,389 @@ lattice/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/build
 .PHONY : lattice/fast
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.o: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.i: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.s: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.o: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.i: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.s: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.o: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.i: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.s: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.o: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.i: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.s: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.o: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.i: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.s: Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.o: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.i: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.s: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.o: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.i: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.s: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.o: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.i: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.s: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.o: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.i: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.s: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.o: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.o: Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.i: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.i: Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.s: Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.s: Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
+Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s
 
-Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.o: Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.o
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.o: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.o
 
 # target to build an object file
-Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
 
-Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.i: Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.i
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.i: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.i
 
 # target to preprocess a source file
-Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
 
-Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.s: Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.s
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.s: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.s
 
 # target to generate assembly for a file
-Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s
-.PHONY : Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.o: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.o
+
+# target to build an object file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.i: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.i
+
+# target to preprocess a source file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.s: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.s
+
+# target to generate assembly for a file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.o: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.o
+
+# target to build an object file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.i: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.i
+
+# target to preprocess a source file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.s: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.s
+
+# target to generate assembly for a file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.o: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.o
+
+# target to build an object file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.i: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.i
+
+# target to preprocess a source file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.s: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.s
+
+# target to generate assembly for a file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.o: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.o
+
+# target to build an object file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.i: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.i
+
+# target to preprocess a source file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
+
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.s: Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.s
+
+# target to generate assembly for a file
+Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
+.PHONY : Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
+
+Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.o: Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o
+.PHONY : Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.o
+
+# target to build an object file
+Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o
+.PHONY : Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o
+
+Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.i: Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i
+.PHONY : Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.i
+
+# target to preprocess a source file
+Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i
+.PHONY : Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i
+
+Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.s: Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s
+.PHONY : Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.s
+
+# target to generate assembly for a file
+Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/lattice.dir/build.make CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s
+.PHONY : Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s
 
 bindings.o: bindings.cpp.o
 .PHONY : bindings.o
@@ -450,39 +570,54 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... lattice"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.s"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.o"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.i"
-	@echo "... Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.s"
+	@echo "... Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.o"
+	@echo "... Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.i"
+	@echo "... Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.s"
 	@echo "... bindings.o"
 	@echo "... bindings.i"
 	@echo "... bindings.s"

@@ -53,10 +53,10 @@ RM = /opt/homebrew/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /Users/jason/Documents/LatticeJS/wasm
+CMAKE_SOURCE_DIR = /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /Users/jason/Documents/LatticeJS/wasm/build
+CMAKE_BINARY_DIR = /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build
 
 # Include any dependencies generated for this target.
 include CMakeFiles/lattice.dir/depend.make
@@ -72,237 +72,322 @@ include CMakeFiles/lattice.dir/flags.make
 CMakeFiles/lattice.dir/codegen:
 .PHONY : CMakeFiles/lattice.dir/codegen
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o -c /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.s
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o: CMakeFiles/lattice.dir/flags.make
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o: CMakeFiles/lattice.dir/includes_C.rsp
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o: /Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o"
-	/Users/jason/emsdk/upstream/emscripten/emcc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o -MF CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o.d -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o -c /Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i"
-	/Users/jason/emsdk/upstream/emscripten/emcc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c > CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.i
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.i
 
-CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s"
-	/Users/jason/emsdk/upstream/emscripten/emcc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c -o CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.s
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.s
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.i
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.s
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.i
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.s
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.i
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.s
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o -c /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.i
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.s
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o: CMakeFiles/lattice.dir/flags.make
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o: CMakeFiles/lattice.dir/includes_C.rsp
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o: /Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o: CMakeFiles/lattice.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o"
+	/Users/jason/emsdk/upstream/emscripten/emcc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o -MF CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o.d -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o -c /Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i"
+	/Users/jason/emsdk/upstream/emscripten/emcc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c > CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.i
+
+CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s"
+	/Users/jason/emsdk/upstream/emscripten/emcc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c -o CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.s
 
 CMakeFiles/lattice.dir/bindings.cpp.o: CMakeFiles/lattice.dir/flags.make
 CMakeFiles/lattice.dir/bindings.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/bindings.cpp.o: /Users/jason/Documents/LatticeJS/wasm/bindings.cpp
+CMakeFiles/lattice.dir/bindings.cpp.o: /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/bindings.cpp
 CMakeFiles/lattice.dir/bindings.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/lattice.dir/bindings.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/bindings.cpp.o -MF CMakeFiles/lattice.dir/bindings.cpp.o.d -o CMakeFiles/lattice.dir/bindings.cpp.o -c /Users/jason/Documents/LatticeJS/wasm/bindings.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/lattice.dir/bindings.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/bindings.cpp.o -MF CMakeFiles/lattice.dir/bindings.cpp.o.d -o CMakeFiles/lattice.dir/bindings.cpp.o -c /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/bindings.cpp
 
 CMakeFiles/lattice.dir/bindings.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/bindings.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeJS/wasm/bindings.cpp > CMakeFiles/lattice.dir/bindings.cpp.i
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/bindings.cpp > CMakeFiles/lattice.dir/bindings.cpp.i
 
 CMakeFiles/lattice.dir/bindings.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/bindings.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeJS/wasm/bindings.cpp -o CMakeFiles/lattice.dir/bindings.cpp.s
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/bindings.cpp -o CMakeFiles/lattice.dir/bindings.cpp.s
 
 CMakeFiles/lattice.dir/opfs_vfs.cpp.o: CMakeFiles/lattice.dir/flags.make
 CMakeFiles/lattice.dir/opfs_vfs.cpp.o: CMakeFiles/lattice.dir/includes_CXX.rsp
-CMakeFiles/lattice.dir/opfs_vfs.cpp.o: /Users/jason/Documents/LatticeJS/wasm/opfs_vfs.cpp
+CMakeFiles/lattice.dir/opfs_vfs.cpp.o: /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/opfs_vfs.cpp
 CMakeFiles/lattice.dir/opfs_vfs.cpp.o: CMakeFiles/lattice.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/lattice.dir/opfs_vfs.cpp.o"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/opfs_vfs.cpp.o -MF CMakeFiles/lattice.dir/opfs_vfs.cpp.o.d -o CMakeFiles/lattice.dir/opfs_vfs.cpp.o -c /Users/jason/Documents/LatticeJS/wasm/opfs_vfs.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/lattice.dir/opfs_vfs.cpp.o"
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/lattice.dir/opfs_vfs.cpp.o -MF CMakeFiles/lattice.dir/opfs_vfs.cpp.o.d -o CMakeFiles/lattice.dir/opfs_vfs.cpp.o -c /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/opfs_vfs.cpp
 
 CMakeFiles/lattice.dir/opfs_vfs.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/lattice.dir/opfs_vfs.cpp.i"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/Documents/LatticeJS/wasm/opfs_vfs.cpp > CMakeFiles/lattice.dir/opfs_vfs.cpp.i
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/opfs_vfs.cpp > CMakeFiles/lattice.dir/opfs_vfs.cpp.i
 
 CMakeFiles/lattice.dir/opfs_vfs.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/lattice.dir/opfs_vfs.cpp.s"
-	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/Documents/LatticeJS/wasm/opfs_vfs.cpp -o CMakeFiles/lattice.dir/opfs_vfs.cpp.s
+	/Users/jason/emsdk/upstream/emscripten/em++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/opfs_vfs.cpp -o CMakeFiles/lattice.dir/opfs_vfs.cpp.s
 
 # Object files for target lattice
 lattice_OBJECTS = \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o" \
-"CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o" \
+"CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o" \
 "CMakeFiles/lattice.dir/bindings.cpp.o" \
 "CMakeFiles/lattice.dir/opfs_vfs.cpp.o"
 
 # External object files for target lattice
 lattice_EXTERNAL_OBJECTS =
 
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/db.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/lattice.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/network.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/schema.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeCpp/src/sync.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/list.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
-lattice.js: CMakeFiles/lattice.dir/Users/jason/Documents/LatticeCpp/Sources/SqliteVec/src/sqlite-vec.c.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_darwin.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_linux.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/cross_process_notifier_noop.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/db.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/ipc.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/lattice.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/network.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/scheduler.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/schema.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeCore/src/sync.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/lattice.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/list.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/managed_object.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/LatticeSwiftCppBridge/src/unmanaged_object.cpp.o
+lattice.js: CMakeFiles/lattice.dir/Users/jason/localdev/latticecore/Sources/SqliteVec/src/sqlite-vec.c.o
 lattice.js: CMakeFiles/lattice.dir/bindings.cpp.o
 lattice.js: CMakeFiles/lattice.dir/opfs_vfs.cpp.o
 lattice.js: CMakeFiles/lattice.dir/build.make
 lattice.js: CMakeFiles/lattice.dir/objects1.rsp
 lattice.js: CMakeFiles/lattice.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Linking CXX executable lattice.js"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Linking CXX executable lattice.js"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/lattice.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
@@ -314,6 +399,6 @@ CMakeFiles/lattice.dir/clean:
 .PHONY : CMakeFiles/lattice.dir/clean
 
 CMakeFiles/lattice.dir/depend:
-	cd /Users/jason/Documents/LatticeJS/wasm/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /Users/jason/Documents/LatticeJS/wasm /Users/jason/Documents/LatticeJS/wasm /Users/jason/Documents/LatticeJS/wasm/build /Users/jason/Documents/LatticeJS/wasm/build /Users/jason/Documents/LatticeJS/wasm/build/CMakeFiles/lattice.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/lattice.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/lattice.dir/depend
 

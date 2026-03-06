@@ -1,6 +1,6 @@
 // Browser integration tests for LatticeJS
 import 'reflect-metadata';
-import { model, link, list, nullable, buildSchemas, Lattice } from '../../src/index';
+import { model, link, list, nullable, indexed, fullText, vector, embedded, enumValue, buildSchemas, Lattice } from '../../src/index';
 
 // ============================================================================
 // Test Models
@@ -743,6 +743,149 @@ async function runTests() {
         if (broadcastCount > 5) {
             throw new Error(`Too many broadcasts: ${broadcastCount}`);
         }
+    });
+
+    // ========================================================================
+    // New feature tests
+    // ========================================================================
+
+    await test('test_GroupBy', async () => {
+        const lattice = await Lattice.open(uniqueDbPath(), [Person, Dog]);
+
+        await lattice.write(async () => {
+            for (const [name, age] of [['Alice', 25], ['Bob', 25], ['Carol', 30], ['Dave', 30], ['Eve', 35]] as const) {
+                const p = new Person();
+                p.name = name;
+                p.age = age as number;
+                await lattice.add(p);
+            }
+        });
+
+        // GROUP BY age should give us 3 groups
+        const grouped = lattice.objects(Person).groupBy('age');
+        const snapshot = await grouped.snapshot();
+        expect(snapshot.length).toBe(3);
+
+        // DISTINCT by age
+        const distinct = lattice.objects(Person).distinct('age');
+        const distinctSnap = await distinct.snapshot();
+        expect(distinctSnap.length).toBe(3);
+    });
+
+    await test('test_TypeSafeQueryBuilder', async () => {
+        const lattice = await Lattice.open(uniqueDbPath(), [Person, Dog]);
+
+        await lattice.write(async () => {
+            const p1 = new Person(); p1.name = 'John'; p1.age = 30; await lattice.add(p1);
+            const p2 = new Person(); p2.name = 'Jane'; p2.age = 25; await lattice.add(p2);
+            const p3 = new Person(); p3.name = 'Jim'; p3.age = 40; await lattice.add(p3);
+        });
+
+        // Type-safe where with query builder
+        const adults = lattice.objects(Person).where(q => q.age.gte(30));
+        expect(await adults.count()).toBe(2);
+
+        // Chained conditions
+        const jAdults = lattice.objects(Person).where(q =>
+            q.age.gte(30).and(q.name.startsWith('J'))
+        );
+        const snap = await jAdults.snapshot();
+        expect(snap.length).toBe(2);
+        expect(snap.map((p: any) => p.name).sort()).toEqual(['Jim', 'John']);
+    });
+
+    await test('test_AddAll_BulkInsert', async () => {
+        const lattice = await Lattice.open(uniqueDbPath(), [Person, Dog]);
+
+        const people: Person[] = [];
+        for (let i = 0; i < 50; i++) {
+            const p = new Person();
+            p.name = `Person ${i}`;
+            p.age = 20 + i;
+            people.push(p);
+        }
+
+        await lattice.addAll(people);
+
+        const count = await lattice.count(Person);
+        expect(count).toBe(50);
+    });
+
+    await test('test_FineGrainedTableObservation', async () => {
+        const lattice = await Lattice.open(uniqueDbPath(), [Person, Dog]);
+
+        const changes: any[] = [];
+        const unsubscribe = lattice.observeTable(Person, (change) => {
+            changes.push(change);
+        });
+
+        const person = new Person();
+        person.name = 'Observed';
+        person.age = 42;
+        await lattice.add(person);
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+        expect(changes.length).toBeGreaterThan(0);
+
+        const insertChange = changes.find((c: any) => c.operation === 'INSERT');
+        expect(insertChange).toBeDefined();
+
+        unsubscribe();
+    });
+
+    await test('test_EmbeddedModel', async () => {
+        class Address {
+            street = '';
+            city = '';
+            zip = '';
+        }
+
+        @model
+        class PersonWithAddress {
+            name = '';
+            address = embedded(Address);
+        }
+
+        const lattice = await Lattice.open(uniqueDbPath(), [PersonWithAddress]);
+
+        const person = new PersonWithAddress();
+        person.name = 'John';
+        const addr = new Address();
+        addr.street = '123 Main St';
+        addr.city = 'Springfield';
+        addr.zip = '62701';
+        person.address = addr;
+
+        await lattice.add(person);
+        expect(person.id).toBeDefined();
+
+        const found = await lattice.find(PersonWithAddress, person.id!);
+        expect(found).toBeDefined();
+        expect(found!.name).toBe('John');
+        expect(found!.address?.street).toBe('123 Main St');
+        expect(found!.address?.city).toBe('Springfield');
+        expect(found!.address?.zip).toBe('62701');
+    });
+
+    await test('test_EnumValue', async () => {
+        enum Status { Active = 'active', Inactive = 'inactive' }
+
+        @model
+        class Task {
+            title = '';
+            status = enumValue(Status, Status.Active);
+        }
+
+        const lattice = await Lattice.open(uniqueDbPath(), [Task]);
+
+        const task = new Task();
+        task.title = 'Do stuff';
+        task.status = Status.Inactive;
+        await lattice.add(task);
+
+        const found = await lattice.find(Task, task.id!);
+        expect(found).toBeDefined();
+        expect(found!.status).toBe('inactive');
     });
 
     await test('test_RealServerSync', async () => {
