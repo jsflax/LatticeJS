@@ -1,5 +1,5 @@
 // LatticeJS - Browser-first Lattice client
-export { Lattice } from './lattice';
+export { Lattice, LogLevel } from './lattice';
 export { Results } from './results';
 export { List } from './list';
 export {

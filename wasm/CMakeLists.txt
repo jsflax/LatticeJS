@@ -19,13 +19,12 @@ if(EMSCRIPTEN)
         -fexceptions
         -sALLOW_MEMORY_GROWTH=1
         -sMAXIMUM_MEMORY=512MB
-        -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','addFunction','UTF8ToString','HEAPU8']
-        -sEXPORTED_FUNCTIONS=['_malloc','_free','_ws_handle_open','_ws_handle_message','_ws_handle_error','_ws_handle_close']
+        -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','addFunction','UTF8ToString','HEAPU8','FS']
+        -sEXPORTED_FUNCTIONS=['_malloc','_free','_ws_handle_open','_ws_handle_message','_ws_handle_error','_ws_handle_close','_lattice_set_log_level']
         -sMODULARIZE=1
         -sEXPORT_ES6=1
         -sEXPORT_NAME=createLatticeModule
         -sENVIRONMENT=web,worker
-        -sUSE_SQLITE3=1
         -sINVOKE_RUN=0
         -sFORCE_FILESYSTEM=1
         # Link our custom OPFS VFS JS library
@@ -33,9 +32,24 @@ if(EMSCRIPTEN)
         -sALLOW_TABLE_GROWTH=1
     )
 
-    # Use Emscripten's SQLite port
-    add_compile_options(-sUSE_SQLITE3=1)
 endif()
+
+# Fetch SQLite amalgamation (3.45.0) instead of Emscripten's bundled 3.39.0
+# Required for unhex() function (added in 3.41.0), used by sync BLOB handling
+include(FetchContent)
+FetchContent_Declare(
+    sqlite3
+    URL https://www.sqlite.org/2024/sqlite-amalgamation-3450000.zip
+)
+FetchContent_MakeAvailable(sqlite3)
+
+add_library(sqlite3_bundled STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
+target_include_directories(sqlite3_bundled PUBLIC ${sqlite3_SOURCE_DIR})
+target_compile_definitions(sqlite3_bundled PRIVATE
+    SQLITE_ENABLE_FTS5
+    SQLITE_ENABLE_JSON1
+)
+target_compile_definitions(sqlite3_bundled PUBLIC SQLITE_CORE)
 
 # Path to LatticeCore
 set(LATTICE_CPP_DIR "/Users/jason/localdev/latticecore")
@@ -44,6 +58,7 @@ set(LATTICE_CPP_DIR "/Users/jason/localdev/latticecore")
 include_directories(
     ${LATTICE_CPP_DIR}/Sources/LatticeCore/include
     ${LATTICE_CPP_DIR}/Sources/LatticeSwiftCppBridge/include
+    ${LATTICE_CPP_DIR}/Sources/LatticeCAPI/include
     ${LATTICE_CPP_DIR}/Sources/SqliteVec/src
     ${LATTICE_CPP_DIR}/Sources/SqliteVec/include
 )
@@ -56,6 +71,11 @@ file(GLOB_RECURSE LATTICE_CPP_SOURCES
 # Bridge sources
 file(GLOB_RECURSE BRIDGE_SOURCES
     ${LATTICE_CPP_DIR}/Sources/LatticeSwiftCppBridge/src/*.cpp
+)
+
+# C API sources
+file(GLOB_RECURSE CAPI_SOURCES
+    ${LATTICE_CPP_DIR}/Sources/LatticeCAPI/src/*.cpp
 )
 
 # SqliteVec (without SIMD for WASM)
@@ -73,6 +93,7 @@ set(BINDINGS_SOURCES
 add_executable(lattice
     ${LATTICE_CPP_SOURCES}
     ${BRIDGE_SOURCES}
+    ${CAPI_SOURCES}
     ${SQLITE_VEC_SOURCES}
     ${BINDINGS_SOURCES}
 )
@@ -83,6 +104,10 @@ target_compile_definitions(lattice PRIVATE
     # No SQLITE_VEC_ENABLE_AVX
     SQLITE_CORE=1
 )
+
+# Link bundled SQLite
+target_link_libraries(lattice PRIVATE sqlite3_bundled)
+target_include_directories(lattice PRIVATE ${sqlite3_SOURCE_DIR})
 
 # WASM-specific defines
 if(EMSCRIPTEN)

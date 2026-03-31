@@ -136,6 +136,7 @@ export interface LatticeWasm {
     compactAuditLog(): void;
     safeCompactAuditLog(staleSeconds: number): void;
     generateHistory(): void;
+    walCheckpoint(): void;
 }
 
 export interface SyncProgress {

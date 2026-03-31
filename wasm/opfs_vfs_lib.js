@@ -34,7 +34,7 @@ mergeInto(LibraryManager.library, {
     },
 
     // Check if OPFS is available (synchronous check)
-    js_opfs_available__deps: ['$opfsInitStorage'],
+    js_opfs_available__deps: ['$opfsInitStorage', '$initOpfsRoot', '$opfsPreOpen', '$opfsFileExists', '$opfsDeleteFile'],
     js_opfs_available: function() {
         // Check if we're in a Worker context with OPFS support
         if (typeof navigator === 'undefined') {
@@ -308,9 +308,19 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
 
-        // Check if file is in our open handles
+        // Check if file is in our open handles and has content
         for (const entry of Object.values(Module._opfsHandles)) {
             if (entry.path === path) {
+                // A file truncated to 0 by js_opfs_delete is logically deleted
+                // Reporting it as "exists" would cause SQLite to think there's
+                // a hot journal and attempt recovery, which fails on the empty file
+                try {
+                    if (entry.accessHandle.getSize() === 0) {
+                        return 0;
+                    }
+                } catch (e) {
+                    return 0;
+                }
                 return 1;
             }
         }
@@ -358,28 +368,27 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    // Synchronous delete - closes handle and removes from cache
-    // Actual file deletion happens when the SyncAccessHandle is closed
+    // Synchronous delete - truncates file to simulate deletion while keeping
+    // the pre-opened SyncAccessHandle alive. We can't actually close and reopen
+    // handles synchronously (createSyncAccessHandle is async), so we truncate
+    // to 0 bytes instead. SQLite will see an empty file on next open.
     js_opfs_delete__deps: ['$opfsInitStorage', '$opfsLog'],
     js_opfs_delete: function(pathPtr) {
         const path = UTF8ToString(pathPtr);
         opfsLog('Delete requested: ' + path);
 
-        // Close handle if open
+        // Truncate instead of closing - keeps handle alive for reuse
         for (const [id, entry] of Object.entries(Module._opfsHandles)) {
             if (entry.path === path) {
                 try {
-                    opfsLog('Closing handle for delete: ' + id + ' ' + path);
-                    entry.accessHandle.close();
+                    opfsLog('Truncating for delete: ' + id + ' ' + path);
+                    entry.accessHandle.truncate(0);
                 } catch (e) {
-                    opfsLog('ERROR: Error closing handle: ' + e.message);
+                    opfsLog('ERROR: Error truncating handle: ' + e.message);
                 }
-                delete Module._opfsHandles[id];
             }
         }
 
-        // Note: We can't actually delete files synchronously in OPFS
-        // The file will be effectively empty/closed, and can be recreated
         opfsLog('Delete completed for: ' + path);
         return 0;
     },

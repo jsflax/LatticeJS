@@ -57,6 +57,14 @@ function createSharedWorker(): SharedWorker {
     return worker;
 }
 
+export enum LogLevel {
+    Off = 0,
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+}
+
 // Global WASM module cache
 let wasmModule: any = null;
 
@@ -95,6 +103,24 @@ export class Lattice {
         websocketUrl: string;
         authToken?: string;
     };
+
+    /**
+     * Set the global C++ log level.
+     * Loads WASM if not already loaded.
+     */
+    static async setLogLevel(level: LogLevel) {
+        if (!wasmModule) {
+            const module = await import(/* @vite-ignore */ wasmJsUrl);
+            wasmModule = await module.default({
+                locateFile: (p: string) => {
+                    if (p.endsWith('.wasm')) return wasmBinaryUrl;
+                    return p;
+                }
+            });
+            setWasmModule(wasmModule);
+        }
+        wasmModule._lattice_set_log_level(level);
+    }
 
     /**
      * Open a Lattice database.
@@ -200,7 +226,13 @@ export class Lattice {
     }
 
     /**
-     * Open a persistent database with worker sync.
+     * Open a persistent database.
+     *
+     * Architecture:
+     * - Main thread opens named database (MEMFS) with sync — owns the data + WebSocket
+     * - On startup, restore from OPFS snapshot for fast reload (delta sync only)
+     * - Periodically save snapshots to OPFS (async API)
+     * - SharedWorker is just a relay for cross-tab coordination
      */
     private static async openPersistent(
         path: string,
@@ -210,101 +242,133 @@ export class Lattice {
     ): Promise<Lattice> {
         console.log('[Lattice] Opening persistent database:', path);
 
-        // Generate unique channel name for this database
-        const channelName = `lattice-sync-${path.replace(/[^a-z0-9]/gi, '-')}`;
+        // Try to restore from OPFS snapshot before opening
+        const restored = await Lattice.restoreSnapshot(path);
+        if (restored) {
+            console.log('[Lattice] Restored snapshot from OPFS');
+        }
 
-        // Create in-memory database on main thread (for live objects)
-        // Main thread has sync enabled since this is where local changes originate
+        // Open with named path (MEMFS) + sync
         let db;
         if (syncConfig?.websocketUrl) {
-            console.log('[Lattice] Main thread sync enabled:', syncConfig.websocketUrl);
-            db = new wasmModule.Lattice(':memory:', schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
+            console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
+            db = new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
         } else {
-            db = new wasmModule.Lattice(':memory:', schemas);
+            db = new wasmModule.Lattice(path, schemas);
         }
         const lattice = new Lattice(db, schemas, modelMap);
 
-        // Connect to SharedWorker for OPFS persistence (shared across all tabs)
-        console.log('[Lattice] Connecting to SharedWorker for OPFS...');
+        // Set up periodic OPFS snapshot saves (every 15s when dirty)
+        let snapshotDirty = false;
+        setInterval(async () => {
+            if (snapshotDirty) {
+                snapshotDirty = false;
+                await Lattice.saveSnapshot(path, db);
+            }
+        }, 15000);
+
+        // Mark dirty when data changes (for snapshot saves)
+        for (const [, model] of modelMap) {
+            lattice.observeTable(model, () => { snapshotDirty = true; });
+        }
+
+        // Connect SharedWorker as cross-tab relay
+        const channelName = `lattice-sync-${path.replace(/[^a-z0-9]/gi, '-')}`;
+        console.log('[Lattice] Connecting SharedWorker for cross-tab relay...');
         const sharedWorker = createSharedWorker();
         lattice.sharedWorker = sharedWorker;
-
-        // Start the port BEFORE wrapping with Comlink
         sharedWorker.port.start();
-        console.log('[Lattice] SharedWorker port started');
-
-        // Add raw message listener for debugging
-        sharedWorker.port.addEventListener('message', (e) => {
-            console.log('[Lattice] Raw message from SharedWorker:', 
-                JSON.stringify(e.data));
-        });
-
         lattice.workerApi = Comlink.wrap<SharedWorkerApi>(sharedWorker.port);
-        console.log('[Lattice] Comlink wrapped, calling init...');
 
-        // Initialize WASM in worker (no-op if already initialized by another tab)
-        await lattice.workerApi.init(wasmJsUrl, wasmBinaryUrl);
-
-        // Open OPFS database in worker (no-op if already opened by another tab)
-        // SharedWorker is just for persistence - main thread handles server sync
-        await lattice.workerApi.open(path, schemas, channelName);
-        console.log('[Lattice] SharedWorker database ready (persistence only)');
-
-        // Set up BroadcastChannel on main thread
-        lattice.broadcastChannel = new BroadcastChannel(channelName);
-
-        // Listen for changes from other sources (worker or other tabs)
-        lattice.broadcastChannel.onmessage = (event) => {
-            console.log('[Lattice] BroadcastChannel received:', event.data.source, 'instanceId:', event.data.instanceId?.substring(0,8), 'myId:', lattice.instanceId.substring(0,8));
-            // Ignore our own messages (same instance)
-            if (event.data.instanceId === lattice.instanceId) {
-                console.log('[Lattice] Ignoring own message');
-                return;
-            }
-            console.log('[Lattice] Applying changes from:', event.data.source, 'entries:', event.data.entries?.length);
-            if (event.data.entries) {
-                lattice.applyRemoteChanges(event.data.entries);
-            }
-        };
-
-        // Observe main thread changes and broadcast to channel
-        lattice.syncObserverId = lattice.observe((entries) => {
-            console.log('[Lattice] Observe callback fired, entries:', entries.length, entries.map(e => ({op: e.operation, table: e.tableName, isRemote: e.isFromRemote})));
-            // Only broadcast local changes (not ones we received from elsewhere)
-            const localEntries = entries.filter(e => !e.isFromRemote);
-            if (localEntries.length > 0 && lattice.broadcastChannel) {
-                console.log('[Lattice] Broadcasting local changes:', localEntries.length);
-                lattice.broadcastChannel.postMessage({
-                    source: 'main',
-                    instanceId: lattice.instanceId,
-                    entries: localEntries
-                });
-            } else if (entries.length > 0 && localEntries.length === 0) {
-                console.log('[Lattice] All entries were remote, not broadcasting');
-            }
-        });
-
-        // Load existing data from worker to main thread
-        console.log('[Lattice] Syncing existing data from SharedWorker...');
-        const pendingJson = await lattice.workerApi.getPendingAuditLog?.();
-        console.log('[Lattice] Got pending audit log:', pendingJson?.substring(0, 200));
-        if (pendingJson) {
+        // Initialize SharedWorker in the background — don't block open()
+        (async () => {
             try {
-                const entries = JSON.parse(pendingJson);
-                if (entries.length > 0) {
-                    console.log('[Lattice] Applying', entries.length, 'existing entries from SharedWorker');
-                    const applied = lattice.applyRemoteChanges(entries);
-                    console.log('[Lattice] Applied entries, result:', applied);
-                } else {
-                    console.log('[Lattice] No existing entries in SharedWorker');
-                }
-            } catch (e) {
-                console.error('[Lattice] Failed to sync existing data:', e);
+                console.log('[Lattice] SharedWorker: initializing WASM...');
+                await lattice.workerApi!.init(wasmJsUrl, wasmBinaryUrl);
+                console.log('[Lattice] SharedWorker: WASM initialized, opening DB...');
+                await lattice.workerApi!.open(path, schemas, channelName);
+                console.log('[Lattice] SharedWorker relay ready');
+            } catch (err) {
+                console.error('[Lattice] SharedWorker init failed:', err);
             }
+        })();
+
+        // Save initial snapshot after first sync batch completes
+        // (triggers after the first burst of observer callbacks settles)
+        let initialSaveTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleInitialSave = () => {
+            if (initialSaveTimer) clearTimeout(initialSaveTimer);
+            initialSaveTimer = setTimeout(async () => {
+                initialSaveTimer = null;
+                await Lattice.saveSnapshot(path, db);
+                console.log('[Lattice] Initial snapshot saved');
+            }, 5000);
+        };
+        // The observeTable callbacks will fire as sync data arrives
+        for (const [, model] of modelMap) {
+            lattice.observeTable(model, () => {
+                if (initialSaveTimer !== null || !restored) {
+                    // Still in initial sync phase — schedule save
+                    scheduleInitialSave();
+                }
+            });
         }
 
         console.log('[Lattice] Persistent database ready');
         return lattice;
+    }
+
+    /**
+     * Save database snapshot to OPFS (async API, works on main thread).
+     */
+    private static async saveSnapshot(path: string, db: LatticeWasm): Promise<void> {
+        try {
+            if (!navigator?.storage?.getDirectory) return;
+
+            // Flush WAL into main database file
+            db.walCheckpoint();
+
+            // Read from Emscripten MEMFS
+            const data: Uint8Array = wasmModule.FS.readFile(path);
+            if (data.length === 0) return;
+
+            const root = await navigator.storage.getDirectory();
+            const dir = await root.getDirectoryHandle('lattice-snapshots', { create: true });
+            const safeName = path.replace(/[^a-z0-9._-]/gi, '_');
+            const fileHandle = await dir.getFileHandle(safeName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(data.buffer as ArrayBuffer);
+            await writable.close();
+
+            console.log(`[Lattice] Snapshot saved: ${data.length} bytes`);
+        } catch (e) {
+            console.warn('[Lattice] Snapshot save failed:', e);
+        }
+    }
+
+    /**
+     * Restore database snapshot from OPFS into Emscripten MEMFS.
+     */
+    private static async restoreSnapshot(path: string): Promise<boolean> {
+        try {
+            if (!navigator?.storage?.getDirectory) return false;
+
+            const root = await navigator.storage.getDirectory();
+            const dir = await root.getDirectoryHandle('lattice-snapshots', { create: false });
+            const safeName = path.replace(/[^a-z0-9._-]/gi, '_');
+            const fileHandle = await dir.getFileHandle(safeName, { create: false });
+            const file = await fileHandle.getFile();
+            const data = new Uint8Array(await file.arrayBuffer());
+
+            if (data.length === 0) return false;
+
+            // Write to Emscripten MEMFS so SQLite finds it when opening
+            wasmModule.FS.writeFile(path, data);
+            console.log(`[Lattice] Snapshot restored: ${data.length} bytes`);
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /**
@@ -325,9 +389,7 @@ export class Lattice {
         }
 
         // Add to database - this makes dynObj managed and assigns id/globalId
-        console.log('[Lattice.add] Adding to table:', tableName);
         this.db.addObject(tableName, dynObj);
-        console.log('[Lattice.add] Added, id:', dynObj.getInt('id'));
 
         // Store lattice reference for link/list resolution
         (instance as any)[LATTICE_REF] = this;
@@ -719,15 +781,11 @@ export class Lattice {
      * @returns Unsubscribe function
      */
     observe(callback: (entries: AuditLogEntry[]) => void): () => void {
-        console.log('[Lattice.observe] Registering observer...');
-
         // Wrap the callback to parse JSON from C++
         const wrappedCallback = (json: string) => {
-            console.log('[Lattice.observe] Callback invoked with JSON:', json?.substring(0, 200));
             try {
                 const rawEntries = JSON.parse(json);
                 const entries: AuditLogEntry[] = rawEntries.map((e: any) => this.parseAuditLogEntry(e));
-                console.log('[Lattice.observe] Parsed entries:', entries.length);
                 callback(entries);
             } catch (e) {
                 console.error('[Lattice.observe] Failed to parse audit log:', e);
@@ -735,9 +793,7 @@ export class Lattice {
         };
 
         // Register observer with C++
-        console.log('[Lattice.observe] Calling db.observeAuditLog...');
         const observerId = this.db.observeAuditLog(wrappedCallback);
-        console.log('[Lattice.observe] Got observer ID:', observerId);
 
         // Return unsubscribe function
         return () => {

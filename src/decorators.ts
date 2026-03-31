@@ -369,7 +369,15 @@ export function model<T extends ModelConstructor>(targetOrName: T | string) {
             return transformModelClass(target, targetOrName);
         };
     }
-    return transformModelClass(targetOrName, targetOrName.name);
+    const name = targetOrName.name;
+    if (name.length <= 2) {
+        throw new Error(
+            `[Lattice] @model applied to class with minified name "${name}". ` +
+            `Add latticePlugin() from 'lattice-js/vite' to your Vite config, ` +
+            `or use @model('ClassName') with an explicit name.`
+        );
+    }
+    return transformModelClass(targetOrName, name);
 }
 
 /**
