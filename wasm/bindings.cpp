@@ -659,7 +659,7 @@ public:
 
     void push_back(JsDynamicObject& obj) {
         if (ref_ && obj.raw()) {
-            ref_->push_back(obj.raw());
+            ref_->push_back(*obj.raw());
         }
     }
 
@@ -854,7 +854,7 @@ val dynamic_object_to_js(dynamic_object_ref* obj, const SwiftSchema* schema) {
                             releaseDynamicObjectRef(linked_ref);
                         } else {
                             // Convert the linked object to JS
-                            auto* linked_schema = linked_ref->lattice_ref()->get()->get_properties_for_table(prop.target_table);
+                            auto* linked_schema = linked_ref->getLattice()->get()->get_properties_for_table(prop.target_table);
                             val linked_js = dynamic_object_ref_to_js(linked_ref, linked_schema);
                             linked_js.set("id", linked_id);
                             linked_js.set("globalId", linked_ref->get_string("globalId"));
@@ -1578,14 +1578,22 @@ public:
             auto* ctx = new AuditLogContext{new val(callback)};
 
             auto observer_id = ref_->get()->add_table_observer("AuditLog", ctx,
-                [](void* context, const char* operation, int64_t row_id, const char* global_id) {
+                [](void* context, const char* const* operations, const int64_t* row_ids,
+                   const char* const* global_ids, size_t count) {
                     auto* ctx = static_cast<AuditLogContext*>(context);
-
-                    if (std::string(operation) != "INSERT") return;
-
-                    std::string gid(global_id ? global_id : "");
-                    std::string json = "[{\"globalId\":\"" + gid + "\",\"operation\":\"" + std::string(operation) + "\",\"rowId\":" + std::to_string(row_id) + "}]";
-                    (*(ctx->callback))(json);
+                    // Batched delivery (one call per WAL flush) — emit one
+                    // JSON array with the INSERT rows from this batch.
+                    std::string json = "[";
+                    bool first = true;
+                    for (size_t i = 0; i < count; i++) {
+                        if (std::string(operations[i]) != "INSERT") continue;
+                        std::string gid(global_ids[i] ? global_ids[i] : "");
+                        if (!first) json += ",";
+                        first = false;
+                        json += "{\"globalId\":\"" + gid + "\",\"operation\":\"" + std::string(operations[i]) + "\",\"rowId\":" + std::to_string(row_ids[i]) + "}";
+                    }
+                    json += "]";
+                    if (!first) (*(ctx->callback))(json);
                 },
                 [](void* context) {
                     auto* ctx = static_cast<AuditLogContext*>(context);
@@ -1607,13 +1615,18 @@ public:
         try {
             auto* stored_callback = new val(callback);
             auto observer_id = ref_->get()->add_table_observer(table_name, stored_callback,
-                [](void* context, const char* operation, int64_t row_id, const char* global_id) {
+                [](void* context, const char* const* operations, const int64_t* row_ids,
+                   const char* const* global_ids, size_t count) {
                     auto* cb = static_cast<val*>(context);
-                    val entry = val::object();
-                    entry.set("operation", val(std::string(operation)));
-                    entry.set("rowId", val(static_cast<double>(row_id)));
-                    entry.set("globalRowId", val(std::string(global_id ? global_id : "")));
-                    (*cb)(entry);
+                    // Batched delivery — fan out one JS event per row to
+                    // preserve the original per-row callback contract.
+                    for (size_t i = 0; i < count; i++) {
+                        val entry = val::object();
+                        entry.set("operation", val(std::string(operations[i])));
+                        entry.set("rowId", val(static_cast<double>(row_ids[i])));
+                        entry.set("globalRowId", val(std::string(global_ids[i] ? global_ids[i] : "")));
+                        (*cb)(entry);
+                    }
                 });
             observer_callbacks_[observer_id] = stored_callback;
             return observer_id;
