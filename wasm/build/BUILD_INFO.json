@@ -1,0 +1,6 @@
+{
+  "latticecoreCommit": "6cec1f60a90f1d77e3a846a7e727e9a2525340db",
+  "latticecoreTag": "0.10.3",
+  "emsdk": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 5.0.2-git",
+  "date": "2026-07-05T16:48:47Z"
+}

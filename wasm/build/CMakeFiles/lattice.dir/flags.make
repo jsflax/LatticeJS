@@ -3,15 +3,15 @@
 
 # compile C with /Users/jason/emsdk/upstream/emscripten/emcc
 # compile CXX with /Users/jason/emsdk/upstream/emscripten/em++
-C_DEFINES = -DLATTICE_OPFS_VFS=1 -DLATTICE_WASM=1 -DSQLITE_CORE=1
+C_DEFINES = -DLATTICE_OPFS_VFS=1 -DLATTICE_WASM=1 -DSQLITE_CORE -DSQLITE_CORE=1
 
 C_INCLUDES = @CMakeFiles/lattice.dir/includes_C.rsp
 
-C_FLAGS = -fexceptions -sUSE_SQLITE3=1
+C_FLAGS = -O3 -DNDEBUG -fexceptions
 
-CXX_DEFINES = -DLATTICE_OPFS_VFS=1 -DLATTICE_WASM=1 -DSQLITE_CORE=1
+CXX_DEFINES = -DLATTICE_OPFS_VFS=1 -DLATTICE_WASM=1 -DSQLITE_CORE -DSQLITE_CORE=1
 
 CXX_INCLUDES = @CMakeFiles/lattice.dir/includes_CXX.rsp
 
-CXX_FLAGS = -std=gnu++20 -fexceptions -sUSE_SQLITE3=1
+CXX_FLAGS = -DNDEBUG -O3 -DNDEBUG -std=gnu++20 -fexceptions
 

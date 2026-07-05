@@ -89,6 +89,29 @@ static std::shared_ptr<emscripten_scheduler> g_emscripten_scheduler = std::make_
 
 #include <lattice/network.hpp>
 
+// Global JS sync-state callback: fires on WS open/close/error with
+// {state, code, reason}. First-class replacement for scraping the
+// lattice-debug BroadcastChannel — a gated/failed sync handshake is
+// otherwise invisible to JS (browsers report close 1006 regardless of
+// the HTTP status that rejected the upgrade).
+static val* g_sync_state_callback = nullptr;
+
+void setSyncStateCallback(val callback) {
+    delete g_sync_state_callback;
+    g_sync_state_callback = callback.isNull() || callback.isUndefined()
+        ? nullptr
+        : new val(callback);
+}
+
+static void notifySyncState(const char* state, int code, const std::string& reason) {
+    if (!g_sync_state_callback) return;
+    val info = val::object();
+    info.set("state", val(std::string(state)));
+    info.set("code", val(code));
+    info.set("reason", val(reason));
+    (*g_sync_state_callback)(info);
+}
+
 class emscripten_websocket_client : public sync_transport {
 private:
     val ws_ = val::null();
@@ -190,6 +213,7 @@ public:
     // Called from JS handlers
     void handle_open() {
         state_ = transport_state::open;
+        notifySyncState("open", 0, "");
         if (on_open_) {
             g_emscripten_scheduler->invoke([this]() {
                 on_open_();
@@ -239,6 +263,7 @@ public:
 
     void handle_error(val event) {
         debugLogToChannel("WS error occurred");
+        notifySyncState("error", 0, "WebSocket error");
         if (on_error_) {
             g_emscripten_scheduler->invoke([this]() { on_error_("WebSocket error"); });
         }
@@ -255,6 +280,7 @@ public:
 
         state_ = transport_state::closed;
         ws_ = val::null();
+        notifySyncState("closed", code, reason);
 
         if (on_close_) {
             g_emscripten_scheduler->invoke([this, code, reason]() { on_close_(code, reason); });
@@ -2021,6 +2047,7 @@ static void enable_shared_cache() {
 EMSCRIPTEN_BINDINGS(lattice) {
     // Version check
     function("getWasmVersion", &getWasmVersion);
+    function("setSyncStateCallback", &setSyncStateCallback);
 
     // Sync message creation (for test server)
     function("createSyncMessage", &createSyncMessage);

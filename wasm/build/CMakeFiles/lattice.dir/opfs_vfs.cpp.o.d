@@ -1,15 +1,15 @@
 CMakeFiles/lattice.dir/opfs_vfs.cpp.o: \
-  /Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/opfs_vfs.cpp \
-  /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/sqlite3.h \
+  /Users/jason/localdev/LatticeJS/wasm/opfs_vfs.cpp \
+  /Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-src/sqlite3.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/compat/stdarg.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/stdarg.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/stdarg.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/stdarg.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stdarg_header_macro.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stdarg___gnuc_va_list.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stdarg_va_list.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stdarg_va_arg.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stdarg___va_copy.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stdarg_va_copy.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stdarg_header_macro.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stdarg___gnuc_va_list.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stdarg_va_list.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stdarg_va_arg.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stdarg___va_copy.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stdarg_va_copy.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/compat/string.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/string.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__config \
@@ -27,17 +27,17 @@ CMakeFiles/lattice.dir/opfs_vfs.cpp.o: \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/stdio.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/wasi/api.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/stddef.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/stddef.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/stddef.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/stddef.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_header_macro.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_ptrdiff_t.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_size_t.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_wchar_t.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_null.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_nullptr_t.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_max_align_t.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/__stddef_offsetof.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/stdint.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_header_macro.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_ptrdiff_t.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_size_t.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_wchar_t.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_null.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_nullptr_t.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_max_align_t.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/__stddef_offsetof.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/stdint.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/stdint.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/bits/stdint.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/compat/stdlib.h \
@@ -52,7 +52,7 @@ CMakeFiles/lattice.dir/opfs_vfs.cpp.o: \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/em_macros.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/em_types.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/stdbool.h \
-  /Users/jason/emsdk/upstream/lib/clang/22/include/stdbool.h \
+  /opt/homebrew/Cellar/emscripten/5.0.2/libexec/llvm/lib/clang/23/include/stdbool.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/stdbool.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/em_js.h \
   /Users/jason/emsdk/upstream/emscripten/cache/sysroot/include/emscripten/promise.h \

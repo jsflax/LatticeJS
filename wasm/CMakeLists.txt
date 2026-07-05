@@ -51,8 +51,13 @@ target_compile_definitions(sqlite3_bundled PRIVATE
 )
 target_compile_definitions(sqlite3_bundled PUBLIC SQLITE_CORE)
 
-# Path to LatticeCore
-set(LATTICE_CPP_DIR "/Users/jason/localdev/latticecore")
+# Path to LatticeCore — from LATTICECORE_DIR env (build.sh passes it and
+# stamps BUILD_INFO.json with the commit/tag), local-path fallback for
+# bare cmake runs.
+set(LATTICE_CPP_DIR "$ENV{LATTICECORE_DIR}")
+if(LATTICE_CPP_DIR STREQUAL "")
+    set(LATTICE_CPP_DIR "/Users/jason/localdev/LatticeCore")
+endif()
 
 # Include directories (include the bridge!)
 include_directories(

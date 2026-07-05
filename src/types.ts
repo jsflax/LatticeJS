@@ -139,6 +139,15 @@ export interface LatticeWasm {
     walCheckpoint(): void;
 }
 
+/// WS lifecycle for the sync connection. A rejected handshake (401/402
+/// upstream) surfaces as {state:'closed', code:1006} — browsers hide the
+/// HTTP status, so pair this with an HTTP preflight for auth decisions.
+export interface SyncStateInfo {
+  state: 'open' | 'closed' | 'error';
+  code: number;
+  reason: string;
+}
+
 export interface SyncProgress {
     pendingUpload: number;
     totalUpload: number;

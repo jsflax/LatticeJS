@@ -1,3 +1,4 @@
-/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/lattice.dir
-/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/edit_cache.dir
-/Users/jason/conductor/workspaces/LatticeJS/moscow/wasm/build/CMakeFiles/rebuild_cache.dir
+/Users/jason/localdev/LatticeJS/wasm/build/CMakeFiles/sqlite3_bundled.dir
+/Users/jason/localdev/LatticeJS/wasm/build/CMakeFiles/lattice.dir
+/Users/jason/localdev/LatticeJS/wasm/build/CMakeFiles/edit_cache.dir
+/Users/jason/localdev/LatticeJS/wasm/build/CMakeFiles/rebuild_cache.dir

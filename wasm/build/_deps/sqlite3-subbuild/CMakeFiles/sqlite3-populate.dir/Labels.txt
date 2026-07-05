@@ -1,0 +1,14 @@
+# Target labels
+ sqlite3-populate
+# Source files and their labels
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/CMakeFiles/sqlite3-populate
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/CMakeFiles/sqlite3-populate.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/CMakeFiles/sqlite3-populate-complete.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-build.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-configure.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-download.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-install.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-mkdir.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-patch.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-test.rule
+/Users/jason/localdev/LatticeJS/wasm/build/_deps/sqlite3-subbuild/sqlite3-populate-prefix/src/sqlite3-populate-stamp/sqlite3-populate-update.rule

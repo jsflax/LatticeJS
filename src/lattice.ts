@@ -599,6 +599,14 @@ export class Lattice {
      * Observe sync progress changes.
      * @returns Unsubscribe function
      */
+    /**
+     * Observe the sync WebSocket's lifecycle (open / closed / error).
+     * Module-global: one callback, last registration wins; pass null to clear.
+     */
+    onSyncState(callback: ((info: import('./types').SyncStateInfo) => void) | null): void {
+        wasmModule.setSyncStateCallback(callback);
+    }
+
     onSyncProgress(callback: (progress: SyncProgress) => void): () => void {
         const observerId = this.db.onSyncProgress(callback);
         return () => {

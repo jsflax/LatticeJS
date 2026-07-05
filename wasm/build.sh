@@ -31,6 +31,27 @@ emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
 echo "Building WASM module..."
 emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
+# Provenance stamp: which LatticeCore this blob was built from. The wire
+# protocol is version-coupled to the server — the rule is: rebuild from the
+# latticecore tag matching the server's pinned lattice release, then the
+# E2E sync spec (engram-server/app tests/sync.spec.ts) must pass.
+LATTICECORE_DIR="${LATTICECORE_DIR:-/Users/jason/localdev/LatticeCore}"
+if [ -d "$LATTICECORE_DIR/.git" ]; then
+    CORE_COMMIT=$(git -C "$LATTICECORE_DIR" rev-parse HEAD)
+    CORE_TAG=$(git -C "$LATTICECORE_DIR" describe --tags --exact-match 2>/dev/null || echo "")
+else
+    CORE_COMMIT="unknown"; CORE_TAG=""
+fi
+cat > "$BUILD_DIR/BUILD_INFO.json" <<INFO
+{
+  "latticecoreCommit": "$CORE_COMMIT",
+  "latticecoreTag": "$CORE_TAG",
+  "emsdk": "$(emcc --version | head -1)",
+  "date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+INFO
+
 echo ""
 echo "Build complete! Output files:"
 ls -la "$BUILD_DIR"/lattice.*
+cat "$BUILD_DIR/BUILD_INFO.json"
