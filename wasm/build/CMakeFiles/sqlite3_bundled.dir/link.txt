@@ -1,2 +1,0 @@
-/Users/jason/emsdk/upstream/emscripten/emar qc libsqlite3_bundled.a "CMakeFiles/sqlite3_bundled.dir/_deps/sqlite3-src/sqlite3.c.o"
-/Users/jason/emsdk/upstream/emscripten/emranlib libsqlite3_bundled.a

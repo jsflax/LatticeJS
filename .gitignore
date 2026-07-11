@@ -45,4 +45,6 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
-!.vscode/extensions.json
+!.vscode/extensions.jsonwasm/build/
+wasm/lattice.js
+wasm/lattice.wasm

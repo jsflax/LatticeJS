@@ -89,29 +89,6 @@ static std::shared_ptr<emscripten_scheduler> g_emscripten_scheduler = std::make_
 
 #include <lattice/network.hpp>
 
-// Global JS sync-state callback: fires on WS open/close/error with
-// {state, code, reason}. First-class replacement for scraping the
-// lattice-debug BroadcastChannel — a gated/failed sync handshake is
-// otherwise invisible to JS (browsers report close 1006 regardless of
-// the HTTP status that rejected the upgrade).
-static val* g_sync_state_callback = nullptr;
-
-void setSyncStateCallback(val callback) {
-    delete g_sync_state_callback;
-    g_sync_state_callback = callback.isNull() || callback.isUndefined()
-        ? nullptr
-        : new val(callback);
-}
-
-static void notifySyncState(const char* state, int code, const std::string& reason) {
-    if (!g_sync_state_callback) return;
-    val info = val::object();
-    info.set("state", val(std::string(state)));
-    info.set("code", val(code));
-    info.set("reason", val(reason));
-    (*g_sync_state_callback)(info);
-}
-
 class emscripten_websocket_client : public sync_transport {
 private:
     val ws_ = val::null();
@@ -213,7 +190,6 @@ public:
     // Called from JS handlers
     void handle_open() {
         state_ = transport_state::open;
-        notifySyncState("open", 0, "");
         if (on_open_) {
             g_emscripten_scheduler->invoke([this]() {
                 on_open_();
@@ -263,7 +239,6 @@ public:
 
     void handle_error(val event) {
         debugLogToChannel("WS error occurred");
-        notifySyncState("error", 0, "WebSocket error");
         if (on_error_) {
             g_emscripten_scheduler->invoke([this]() { on_error_("WebSocket error"); });
         }
@@ -280,7 +255,6 @@ public:
 
         state_ = transport_state::closed;
         ws_ = val::null();
-        notifySyncState("closed", code, reason);
 
         if (on_close_) {
             g_emscripten_scheduler->invoke([this, code, reason]() { on_close_(code, reason); });
@@ -1604,22 +1578,24 @@ public:
             auto* ctx = new AuditLogContext{new val(callback)};
 
             auto observer_id = ref_->get()->add_table_observer("AuditLog", ctx,
+                // Batched observer contract: one call per WAL flush with
+                // parallel arrays (count rows of op/rowId/globalRowId).
                 [](void* context, const char* const* operations, const int64_t* row_ids,
-                   const char* const* global_ids, size_t count) {
+                   const char* const* global_row_ids, size_t count) {
                     auto* ctx = static_cast<AuditLogContext*>(context);
-                    // Batched delivery (one call per WAL flush) — emit one
-                    // JSON array with the INSERT rows from this batch.
                     std::string json = "[";
-                    bool first = true;
-                    for (size_t i = 0; i < count; i++) {
+                    bool any = false;
+                    for (size_t i = 0; i < count; ++i) {
                         if (std::string(operations[i]) != "INSERT") continue;
-                        std::string gid(global_ids[i] ? global_ids[i] : "");
-                        if (!first) json += ",";
-                        first = false;
-                        json += "{\"globalId\":\"" + gid + "\",\"operation\":\"" + std::string(operations[i]) + "\",\"rowId\":" + std::to_string(row_ids[i]) + "}";
+                        std::string gid(global_row_ids[i] ? global_row_ids[i] : "");
+                        if (any) json += ",";
+                        json += "{\"globalId\":\"" + gid + "\",\"operation\":\"" +
+                                std::string(operations[i]) + "\",\"rowId\":" +
+                                std::to_string(row_ids[i]) + "}";
+                        any = true;
                     }
                     json += "]";
-                    if (!first) (*(ctx->callback))(json);
+                    if (any) (*(ctx->callback))(json);
                 },
                 [](void* context) {
                     auto* ctx = static_cast<AuditLogContext*>(context);
@@ -1641,16 +1617,16 @@ public:
         try {
             auto* stored_callback = new val(callback);
             auto observer_id = ref_->get()->add_table_observer(table_name, stored_callback,
+                // Batched observer contract — deliver one JS callback per row
+                // to preserve the historical per-event shape.
                 [](void* context, const char* const* operations, const int64_t* row_ids,
-                   const char* const* global_ids, size_t count) {
+                   const char* const* global_row_ids, size_t count) {
                     auto* cb = static_cast<val*>(context);
-                    // Batched delivery — fan out one JS event per row to
-                    // preserve the original per-row callback contract.
-                    for (size_t i = 0; i < count; i++) {
+                    for (size_t i = 0; i < count; ++i) {
                         val entry = val::object();
                         entry.set("operation", val(std::string(operations[i])));
                         entry.set("rowId", val(static_cast<double>(row_ids[i])));
-                        entry.set("globalRowId", val(std::string(global_ids[i] ? global_ids[i] : "")));
+                        entry.set("globalRowId", val(std::string(global_row_ids[i] ? global_row_ids[i] : "")));
                         (*cb)(entry);
                     }
                 });
@@ -2047,7 +2023,6 @@ static void enable_shared_cache() {
 EMSCRIPTEN_BINDINGS(lattice) {
     // Version check
     function("getWasmVersion", &getWasmVersion);
-    function("setSyncStateCallback", &setSyncStateCallback);
 
     // Sync message creation (for test server)
     function("createSyncMessage", &createSyncMessage);
