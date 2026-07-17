@@ -1,0 +1,57 @@
+# Minimal CI: proves the wasm module compiles against the pinned LatticeCore
+# and that the TypeScript layer's behavior (vitest) is green.
+#
+# HONEST SCOPE: this does NOT exercise wasm runtime behavior — nothing here
+# instantiates lattice.wasm in a browser/worker. Runtime coverage (OPFS, sync,
+# threading) is a separate, browser-driven concern.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          # Keep in lockstep with the locally verified toolchain
+          # (see CHANGELOG / wasm/build/BUILD_INFO.json).
+          version: 5.0.6
+          actions-cache-folder: emsdk-cache
+
+      - name: Build wasm module against pinned LatticeCore
+        run: ./wasm/build.sh --clean
+
+      - name: Assert wasm artifacts exist and are sane
+        run: |
+          set -euo pipefail
+          ls -la wasm/build/lattice.js wasm/build/lattice.wasm
+          # lattice.wasm was ~2.8 MB at 1.0.0-rc.1; a tiny blob means the
+          # link silently produced a stub. Floor well below, ceiling well above.
+          wasm_size=$(stat -c%s wasm/build/lattice.wasm)
+          js_size=$(stat -c%s wasm/build/lattice.js)
+          echo "lattice.wasm: ${wasm_size} bytes, lattice.js: ${js_size} bytes"
+          test "$wasm_size" -ge 1000000 || { echo "lattice.wasm suspiciously small"; exit 1; }
+          test "$wasm_size" -le 20000000 || { echo "lattice.wasm suspiciously large"; exit 1; }
+          test "$js_size" -ge 50000 || { echo "lattice.js suspiciously small"; exit 1; }
+          cat wasm/build/BUILD_INFO.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript test suite (no wasm runtime)
+        run: npx vitest run
