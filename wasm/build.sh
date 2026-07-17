@@ -35,8 +35,10 @@ emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 # protocol is version-coupled to the server — the rule is: rebuild from the
 # latticecore tag matching the server's pinned lattice release, then the
 # E2E sync spec (engram-server/app tests/sync.spec.ts) must pass.
-LATTICECORE_DIR="${LATTICECORE_DIR:-/Users/jason/localdev/LatticeCore}"
-if [ -d "$LATTICECORE_DIR/.git" ]; then
+LATTICECORE_DIR="${LATTICECORE_DIR:-$SCRIPT_DIR/../LatticeCore}"
+# NB: -e not -d — a submodule checkout has a .git *file* pointing at the
+# superproject's modules dir.
+if [ -e "$LATTICECORE_DIR/.git" ]; then
     CORE_COMMIT=$(git -C "$LATTICECORE_DIR" rev-parse HEAD)
     CORE_TAG=$(git -C "$LATTICECORE_DIR" describe --tags --exact-match 2>/dev/null || echo "")
 else
