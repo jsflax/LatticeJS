@@ -207,10 +207,12 @@ const workerApi = {
         where?: string | null,
         orderBy?: string | null,
         limit?: number | null,
-        offset?: number | null
+        offset?: number | null,
+        groupBy?: string | null,
+        distinctBy?: string | null
     ): Promise<Record<string, unknown>[]> {
         assertOpen();
-        return latticeInstance.objects(tableName, where, orderBy, limit, offset);
+        return latticeInstance.objects(tableName, where, orderBy, limit, offset, groupBy, distinctBy);
     },
 
     /**

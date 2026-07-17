@@ -479,7 +479,9 @@ export class Lattice {
             options?.where ?? null,
             options?.orderBy ?? null,
             options?.limit ?? null,
-            options?.offset ?? null
+            options?.offset ?? null,
+            null,
+            null
         );
         return data.map((d: Record<string, any>) => this.dataToInstance(modelClass, d));
     }
