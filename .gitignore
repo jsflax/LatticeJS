@@ -45,6 +45,15 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
-!.vscode/extensions.jsonwasm/build/
+!.vscode/extensions.json
+
+# Editor backup files
+*~
+
+# Test output
+test-results/
+
+# wasm build artifacts (shipped via the npm files whitelist, never via git)
+wasm/build/
 wasm/lattice.js
 wasm/lattice.wasm
