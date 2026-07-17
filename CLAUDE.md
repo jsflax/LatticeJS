@@ -100,7 +100,7 @@ npm run test:browser
 ## Model Definition
 
 ```typescript
-import { model, link, list, nullable } from 'lattice-js';
+import { model, link, list, nullable } from '@jsflax/lattice';
 
 @model
 class Dog {
@@ -136,7 +136,7 @@ class CustomModel {
 ## Usage
 
 ```typescript
-import { Lattice, model, link, list } from 'lattice-js';
+import { Lattice, model, link, list } from '@jsflax/lattice';
 
 // Open database
 const lattice = await Lattice.open('mydb', [Person, Dog]);

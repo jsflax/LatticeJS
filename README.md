@@ -3,7 +3,7 @@
 A browser-first ORM for JavaScript/TypeScript powered by WebAssembly. SQLite-backed persistence with cross-tab sync, optional server sync, full-text search, and vector search -- all running client-side.
 
 ```typescript
-import { Lattice, model, link, list } from 'lattice-js';
+import { Lattice, model, link, list } from '@jsflax/lattice';
 
 @model
 class Todo {
@@ -41,7 +41,7 @@ const todos = await lattice.objects(Todo)
 ## Installation
 
 ```bash
-npm install lattice-js reflect-metadata
+npm install @jsflax/lattice reflect-metadata
 ```
 
 Add `reflect-metadata` to your entry point:
@@ -57,7 +57,7 @@ LatticeJS uses class names for table mapping. Minifiers break this, so add the V
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
-import { latticePlugin } from 'lattice-js/vite';
+import { latticePlugin } from '@jsflax/lattice/vite';
 
 export default defineConfig({
     plugins: [latticePlugin()],
@@ -78,7 +78,7 @@ Cross-Origin-Embedder-Policy: require-corp
 Property types are inferred from default values:
 
 ```typescript
-import { model, nullable, indexed, fullText } from 'lattice-js';
+import { model, nullable, indexed, fullText } from '@jsflax/lattice';
 
 @model
 class Article {
@@ -97,7 +97,7 @@ class Article {
 ### Relationships
 
 ```typescript
-import { model, link, list } from 'lattice-js';
+import { model, link, list } from '@jsflax/lattice';
 
 @model
 class Author {
@@ -125,7 +125,7 @@ author.articles.push(newArticle);
 ### Enums
 
 ```typescript
-import { model, enumValue } from 'lattice-js';
+import { model, enumValue } from '@jsflax/lattice';
 
 enum Priority { Low = 'low', Medium = 'medium', High = 'high' }
 
@@ -141,7 +141,7 @@ class Task {
 Store complex objects as JSON in a single column:
 
 ```typescript
-import { model, embedded } from 'lattice-js';
+import { model, embedded } from '@jsflax/lattice';
 
 class Address {
     street = '';
@@ -159,7 +159,7 @@ class Contact {
 ### Vectors
 
 ```typescript
-import { model, vector } from 'lattice-js';
+import { model, vector } from '@jsflax/lattice';
 
 @model
 class Document {
@@ -172,7 +172,7 @@ class Document {
 ### Constraints
 
 ```typescript
-import { model, unique, compoundUnique } from 'lattice-js';
+import { model, unique, compoundUnique } from '@jsflax/lattice';
 
 @compoundUnique(['owner', 'slug'])
 @model
@@ -195,7 +195,7 @@ class BlogPost {
 ## Opening a Database
 
 ```typescript
-import { Lattice } from 'lattice-js';
+import { Lattice } from '@jsflax/lattice';
 
 // In-memory (no persistence)
 const lattice = await Lattice.open(':memory:', [Todo, Author, Article]);
@@ -433,7 +433,7 @@ Persistent databases automatically sync across browser tabs using a SharedWorker
 
 ```tsx
 import { useState, useEffect, useCallback } from 'react';
-import { Lattice, model, Results } from 'lattice-js';
+import { Lattice, model, Results } from '@jsflax/lattice';
 
 // --- Models ---
 
@@ -563,7 +563,7 @@ export default TodoApp;
 ```vue
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import { Lattice, model } from 'lattice-js';
+import { Lattice, model } from '@jsflax/lattice';
 
 @model
 class Todo {

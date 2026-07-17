@@ -373,7 +373,7 @@ export function model<T extends ModelConstructor>(targetOrName: T | string) {
     if (name.length <= 2) {
         throw new Error(
             `[Lattice] @model applied to class with minified name "${name}". ` +
-            `Add latticePlugin() from 'lattice-js/vite' to your Vite config, ` +
+            `Add latticePlugin() from '@jsflax/lattice/vite' to your Vite config, ` +
             `or use @model('ClassName') with an explicit name.`
         );
     }
