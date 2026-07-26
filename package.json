@@ -1,6 +1,6 @@
 {
   "name": "@jsflax/lattice",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Lattice ORM for JavaScript/TypeScript with WebAssembly",
   "type": "module",
   "main": "dist/index.js",

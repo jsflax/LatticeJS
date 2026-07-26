@@ -7,16 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-25
+
 ### Changed
+- **LatticeCore submodule bumped to 1.0.1** (b5337c3 → 16828cb, the `1.0.1`
+  tag). Core 1.0.1: 62-scenario conformance corpus; unique-DDL enforcement on
+  the dynamic-schema path, thread-scoped in-transaction read routing, and the
+  geo-bounds dynamic-add fix. The wasm module (`lattice.wasm`/`lattice.js`)
+  is rebuilt from the tag via `wasm/build.sh --clean`; `BUILD_INFO.json`
+  stamps the 1.0.1 commit/tag.
+- **Version aligned at 1.0.0** (`package.json`, was 0.1.0), tracking the
+  core 1.0.x line as planned at the rc.1 pin.
 - **Package renamed to `@jsflax/lattice`** (was `lattice-js`). Install and
   import paths change accordingly (`@jsflax/lattice`, `@jsflax/lattice/worker`,
-  `@jsflax/lattice/vite`). Version stays 0.x; alignment to 1.0.0 happens at
-  the LatticeCore 1.0.0 tag.
-- LatticeCore submodule pinned to **1.0.0-rc.1** (the C ABI freeze), up from
-  the 0.10.4-era pin. The wasm module and `bindings.cpp` build cleanly against
-  the rc.1 tree under Emscripten 5.0.6 with no core-side changes — the
+  `@jsflax/lattice/vite`).
+- The wasm module and `bindings.cpp` build cleanly against the 1.0.x core
+  tree under Emscripten 5.0.6 with no core-side changes — the
   `__EMSCRIPTEN__` guards around the core's native-threading code
-  (scheduler/pacer, sync loop) hold.
+  (scheduler/pacer, sync loop) hold (first verified at the rc.1 pin, up from
+  the 0.10.4-era pin).
 - `objects()` worker RPC now forwards `groupBy`/`distinctBy` through to the
   wasm binding, matching the current 7-argument embind `objects()` signature.
   No behavior change for existing callers (both default to `null`).
