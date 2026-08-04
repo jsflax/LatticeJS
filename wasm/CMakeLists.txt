@@ -18,7 +18,20 @@ if(EMSCRIPTEN)
         -lembind
         -fexceptions
         -sALLOW_MEMORY_GROWTH=1
-        -sMAXIMUM_MEMORY=512MB
+        # The database lives in the WASM heap (MEMFS), and catch-up replays
+        # the channel's whole audit log through it. Measured on a real
+        # account: 198,495 live rows had produced 3,360,649 audit entries /
+        # 2,155 MB of changedFields. At 512MB that account cannot finish the
+        # replay — the apply fails, the entry is never acked, and since the
+        # resume cursor is re-derived from the client's own AuditLog it can
+        # never advance past it. Data silently stops at a date.
+        #
+        # Server-side history compaction is the real fix (it makes catch-up
+        # O(rows) rather than O(edits-ever)); this is headroom so a large
+        # account degrades gracefully instead of wedging permanently.
+        # ALLOW_MEMORY_GROWTH means this is a cap, not a reservation — small
+        # accounts still start at the same 16MB.
+        -sMAXIMUM_MEMORY=2GB
         -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','addFunction','UTF8ToString','HEAPU8','FS']
         -sEXPORTED_FUNCTIONS=['_malloc','_free','_ws_handle_open','_ws_handle_message','_ws_handle_error','_ws_handle_close','_lattice_set_log_level']
         -sMODULARIZE=1
