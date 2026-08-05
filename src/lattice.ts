@@ -260,12 +260,45 @@ export class Lattice {
 
         // Set up periodic OPFS snapshot saves (every 15s when dirty)
         let snapshotDirty = false;
-        setInterval(async () => {
-            if (snapshotDirty) {
-                snapshotDirty = false;
+        let snapshotInFlight = false;
+        const flushSnapshot = async () => {
+            if (!snapshotDirty || snapshotInFlight) return;
+            snapshotInFlight = true;
+            snapshotDirty = false;
+            try {
                 await Lattice.saveSnapshot(path, db);
+            } catch (err) {
+                // A failed save must re-arm — otherwise this dirty window is
+                // silently lost until the NEXT write, and a tab closed in
+                // between re-downloads everything.
+                snapshotDirty = true;
+                console.warn('[Lattice] OPFS snapshot save failed:', err);
+            } finally {
+                snapshotInFlight = false;
             }
-        }, 15000);
+        };
+        setInterval(flushSnapshot, 15000);
+
+        // The 15s timer alone loses up to 15s of applied entries when the
+        // tab closes — including the resume cursor they carry, so the next
+        // load re-downloads everything since the last lucky tick. Flush on
+        // the page-lifecycle edges instead of hoping the timer fired:
+        // pagehide is the last reliable signal on close/navigate, and
+        // visibilitychange→hidden covers tab-switch-then-kill (mobile
+        // Safari never fires pagehide in that order). Best-effort — the
+        // async OPFS write gets a head start it wouldn't otherwise have,
+        // and a write the teardown truncates is SAFE: createWritable() is
+        // swap-on-close, so until close() succeeds the previous snapshot
+        // remains untouched. Worst case is the old behavior (stale
+        // snapshot, larger delta), never a corrupt one.
+        if (typeof document !== 'undefined') {
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') void flushSnapshot();
+            });
+        }
+        if (typeof window !== 'undefined') {
+            window.addEventListener('pagehide', () => { void flushSnapshot(); });
+        }
 
         // Mark dirty when data changes (for snapshot saves)
         for (const [, model] of modelMap) {
