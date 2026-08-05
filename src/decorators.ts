@@ -703,6 +703,14 @@ function getPropertyValue(instance: any, name: string, schema: PropertySchema): 
         return list;
     }
 
+    // Nullable columns: NULL must come back as null for EVERY type. Only
+    // the date case guarded hasValue — a nullable STRING read straight
+    // through getString, whose wasm-side buffer for a NULL column is
+    // uninitialized garbage (observed: 58 NUL bytes, which is TRUTHY in
+    // JS — schema-v3 authorUserId made every synced memory look
+    // foreign/tombstoned).
+    if (schema.nullable && !dynObj.hasValue(name)) return null;
+
     switch (schema.type) {
         case 'string':
             return dynObj.getString(name);
