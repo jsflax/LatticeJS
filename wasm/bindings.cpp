@@ -1839,13 +1839,18 @@ public:
         try {
             auto* stored_callback = new val(callback);
             ref_->get()->set_on_sync_progress(stored_callback,
-                [](void* context, int64_t pending, int64_t total, int64_t acked, int64_t received) {
+                // 6-arg shape as of LatticeCore 1.3.x: sync_id labels which
+                // channel the update belongs to (multiple synchronizers
+                // multiplex one callback). Surfaced to JS as `syncId`.
+                [](void* context, int64_t pending, int64_t total, int64_t acked,
+                   int64_t received, const char* sync_id) {
                     auto* cb = static_cast<val*>(context);
                     val progress = val::object();
                     progress.set("pendingUpload", val(static_cast<double>(pending)));
                     progress.set("totalUpload", val(static_cast<double>(total)));
                     progress.set("acked", val(static_cast<double>(acked)));
                     progress.set("received", val(static_cast<double>(received)));
+                    progress.set("syncId", val(std::string(sync_id ? sync_id : "")));
                     (*cb)(progress);
                 });
             // Store for cleanup - use a special key
