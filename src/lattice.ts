@@ -76,6 +76,8 @@ let wasmModule: any = null;
  */
 export class Lattice {
     private db: LatticeWasm;
+    /** Tears down openPersistent's snapshot timer + page-lifecycle listeners. */
+    private housekeepingCleanup: (() => void) | null = null;
     private schemas: SchemaEntry[];
     private modelMap: Map<string, ModelConstructor>;
 
@@ -277,7 +279,7 @@ export class Lattice {
                 snapshotInFlight = false;
             }
         };
-        setInterval(flushSnapshot, 15000);
+        const snapshotTimer = setInterval(flushSnapshot, 15000);
 
         // The 15s timer alone loses up to 15s of applied entries when the
         // tab closes — including the resume cursor they carry, so the next
@@ -291,14 +293,29 @@ export class Lattice {
         // swap-on-close, so until close() succeeds the previous snapshot
         // remains untouched. Worst case is the old behavior (stale
         // snapshot, larger delta), never a corrupt one.
+        const onVisibility = () => {
+            if (document.visibilityState === 'hidden') void flushSnapshot();
+        };
+        const onPagehide = () => { void flushSnapshot(); };
         if (typeof document !== 'undefined') {
-            document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'hidden') void flushSnapshot();
-            });
+            document.addEventListener('visibilitychange', onVisibility);
         }
         if (typeof window !== 'undefined') {
-            window.addEventListener('pagehide', () => { void flushSnapshot(); });
+            window.addEventListener('pagehide', onPagehide);
         }
+
+        // close() must be able to retire all of this — reopen loops (the
+        // embed's reconnect controller) would otherwise accumulate a timer,
+        // two listeners, and a live wasm sqlite handle per cycle.
+        lattice.housekeepingCleanup = () => {
+            clearInterval(snapshotTimer);
+            if (typeof document !== 'undefined') {
+                document.removeEventListener('visibilitychange', onVisibility);
+            }
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('pagehide', onPagehide);
+            }
+        };
 
         // Mark dirty when data changes (for snapshot saves)
         for (const [, model] of modelMap) {
@@ -636,7 +653,10 @@ export class Lattice {
      */
     /**
      * Observe the sync WebSocket's lifecycle (open / closed / error).
-     * Module-global: one callback, last registration wins; pass null to clear.
+     * Module-global and MULTI-listener: each registration is additive (the
+     * app shell, a status pill, and a reconnect controller can all listen);
+     * pass null to clear all. Events carry no socket identity — with several
+     * synced lattices open, every listener hears every socket.
      */
     onSyncState(callback: ((info: import('./types').SyncStateInfo) => void) | null): void {
         wasmModule.setSyncStateCallback(callback);
@@ -934,6 +954,25 @@ export class Lattice {
             this.sharedWorker.port.close();
             this.sharedWorker = null;
             this.workerApi = null;
+        }
+
+        // Retire openPersistent's snapshot timer + page-lifecycle listeners.
+        if (this.housekeepingCleanup) {
+            this.housekeepingCleanup();
+            this.housekeepingCleanup = null;
+        }
+
+        // Destroy the wasm instance — frees the sqlite connection and, via
+        // the synchronizer's destructor, disconnects the sync socket (the
+        // transport clears its callbacks before close, so teardown emits no
+        // events and queued frames are purged — see bindings.cpp
+        // disconnect()). Without this every close leaked a live wasm
+        // sqlite handle on the same MEMFS file the next open's snapshot
+        // restore overwrites.
+        try {
+            (this.db as unknown as { delete?: () => void }).delete?.();
+        } catch (err) {
+            console.warn('[Lattice.close] wasm instance delete failed:', err);
         }
 
         console.log('[Lattice.close] Database closed');

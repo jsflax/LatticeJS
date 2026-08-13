@@ -155,6 +155,26 @@ public:
 
     void disconnect() override {
         if (!ws_.isNull()) {
+            // Detach BEFORE close(), in this order, or teardown dispatches
+            // into freed memory: the browser delivers ws events as later
+            // tasks, and this object can be destroyed (db.delete() → dtor →
+            // disconnect) before they run. removeEventListener prevents even
+            // already-queued event tasks from invoking the handlers, clearing
+            // _lattice_client covers any path that still reads it, and the
+            // message-queue purge drops deferred frames that captured the raw
+            // pointer at enqueue time. Side effect, deliberate: an
+            // intentional disconnect emits NO syncstate events — only
+            // server-initiated closes (e.g. the projector's kick) reach
+            // app-level reconnect logic.
+            val purge = val::module_property("_ws_purge_client");
+            if (!purge.isUndefined()) {
+                purge(val(reinterpret_cast<uintptr_t>(this)));
+            }
+            ws_.set("_lattice_client", val(0));
+            ws_.call<void>("removeEventListener", val("open"), val::module_property("_ws_onopen_handler"));
+            ws_.call<void>("removeEventListener", val("message"), val::module_property("_ws_onmessage_handler"));
+            ws_.call<void>("removeEventListener", val("error"), val::module_property("_ws_onerror_handler"));
+            ws_.call<void>("removeEventListener", val("close"), val::module_property("_ws_onclose_handler"));
             ws_.call<void>("close");
             ws_ = val::null();
         }
@@ -276,12 +296,39 @@ EM_JS(void, setup_ws_handlers, (), {
         } catch(e) {}
         console.log('[C++ JS]', msg);
     }
+    // Sync-state observation (Lattice.onSyncState). MULTI-listener: the SPA
+    // registers from both main.ts (banner) and sidebar.ts (pill), and the
+    // embed's reconnect controller adds a third — last-wins would silently
+    // kill all but one. null clears all. Payload matches types.ts
+    // SyncStateInfo. Callbacks must never throw into the ws handler.
+    Module._syncStateCbs = [];
+    Module.setSyncStateCallback = function(cb) {
+        if (cb === null) { Module._syncStateCbs = []; return; }
+        Module._syncStateCbs.push(cb);
+    };
+    Module._dispatchSyncState = function(state, code, reason) {
+        var cbs = Module._syncStateCbs;
+        for (var i = 0; i < cbs.length; i++) {
+            try { cbs[i]({ state: state, code: code, reason: reason }); }
+            catch (e) { console.warn('[lattice] syncState callback failed', e); }
+        }
+    };
+    // Drop deferred frames whose client is being destroyed — they captured
+    // the raw pointer at enqueue time and would dispatch into freed memory.
+    Module._ws_purge_client = function(clientPtr) {
+        if (Module._ws_msg_queue) {
+            Module._ws_msg_queue = Module._ws_msg_queue.filter(function(item) {
+                return item.client !== clientPtr;
+            });
+        }
+    };
     Module._ws_onopen_handler = function(event) {
         jsDebugLog('onopen fired, client=' + this._lattice_client);
         var client = this._lattice_client;
         if (client) {
             Module._ws_handle_open(client);
         }
+        Module._dispatchSyncState('open', 0, '');
     };
     // Message queue — yields to browser between chunks so the UI stays responsive
     // during large catch-up syncs.
@@ -321,6 +368,7 @@ EM_JS(void, setup_ws_handlers, (), {
             Module._ws_handle_error(client);
             Module._ws_pending_event = null;
         }
+        Module._dispatchSyncState('error', 0, '');
     };
     Module._ws_onclose_handler = function(event) {
         jsDebugLog('onclose fired: code=' + event.code + ' reason=' + event.reason + ' client=' + this._lattice_client);
@@ -330,6 +378,7 @@ EM_JS(void, setup_ws_handlers, (), {
             Module._ws_handle_close(client);
             Module._ws_pending_event = null;
         }
+        Module._dispatchSyncState('closed', event.code, event.reason || '');
     };
 });
 
