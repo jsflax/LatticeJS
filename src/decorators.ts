@@ -166,6 +166,35 @@ export function isIndexedMarker(value: unknown): value is IndexedMarker {
 }
 
 // ============================================================================
+// Float Marker
+// ============================================================================
+
+const FLOAT_MARKER = Symbol('lattice:float');
+
+interface FloatMarker {
+    [FLOAT_MARKER]: true;
+    innerValue: number;
+}
+
+/**
+ * Forces a REAL column for a numeric property whose default is an integer.
+ * Type inference maps `orderKey = 0` to an INT column, and the int write
+ * path floors values — a fractional ordering key authored in the browser
+ * would be silently truncated. Wrap the default: `orderKey = float(0)`.
+ */
+export function float(defaultValue: number): number {
+    const marker: FloatMarker = {
+        [FLOAT_MARKER]: true,
+        innerValue: defaultValue,
+    };
+    return marker as unknown as number;
+}
+
+export function isFloatMarker(value: unknown): value is FloatMarker {
+    return typeof value === 'object' && value !== null && FLOAT_MARKER in value;
+}
+
+// ============================================================================
 // Full Text Marker
 // ============================================================================
 
@@ -451,6 +480,7 @@ function transformModelClass<T extends ModelConstructor>(target: T, tableName: s
             let actualValue = value;
             let isIndexedProp = false;
             let isFullTextProp = false;
+            let forceFloat = false;
 
             if (isIndexedMarker(value)) {
                 actualValue = value.innerValue;
@@ -458,10 +488,13 @@ function transformModelClass<T extends ModelConstructor>(target: T, tableName: s
             } else if (isFullTextMarker(value)) {
                 actualValue = value.innerValue;
                 isFullTextProp = true;
+            } else if (isFloatMarker(value)) {
+                actualValue = value.innerValue;
+                forceFloat = true;
             }
 
             const isNullable = actualValue === null || actualValue === undefined;
-            const inferredType = inferTypeFromValue(actualValue);
+            const inferredType = forceFloat ? 'float' : inferTypeFromValue(actualValue);
             propertySchemas.push({
                 name: key,
                 type: inferredType,
@@ -951,7 +984,7 @@ export function buildSchemas(modelClasses: ModelConstructor[]): SchemaEntry[] {
  * This is defined here to avoid circular dependencies with list.ts.
  */
 function createListWrapper(linkList: any, targetModel: any, lattice: any): any {
-    return {
+    const wrapper = {
         get length() {
             return linkList?.size() ?? 0;
         },
@@ -1024,6 +1057,16 @@ function createListWrapper(linkList: any, targetModel: any, lattice: any): any {
             return result;
         },
     };
+    // Array parity: numeric indexing (list[0]) like Swift subscripts —
+    // views and specs traverse lists as arrays.
+    return new Proxy(wrapper, {
+        get(target: any, prop: string | symbol, receiver: any) {
+            if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+                return target.at(Number(prop));
+            }
+            return Reflect.get(target, prop, receiver);
+        },
+    });
 }
 
 /**
