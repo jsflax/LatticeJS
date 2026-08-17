@@ -4,7 +4,8 @@ export { Results } from './results';
 export { List } from './list';
 export {
     model, link, list, nullable,
-    indexed, fullText, vector, embedded, enumValue,
+    indexed,
+    float, fullText, vector, embedded, enumValue,
     unique, compoundUnique,
     isModel, getTableName, getPropertySchemas, buildSchemas, discoverModels, hydrateInstance,
 } from './decorators';
