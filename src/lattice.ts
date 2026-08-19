@@ -78,6 +78,14 @@ export class Lattice {
     private db: LatticeWasm;
     /** Tears down openPersistent's snapshot timer + page-lifecycle listeners. */
     private housekeepingCleanup: (() => void) | null = null;
+    /** openPersistent installs this: one last OPFS snapshot at close time,
+     *  AFTER timers/listeners are retired and any in-flight save drained,
+     *  BEFORE the wasm instance is deleted. Without it, a reopen-loop
+     *  consumer (the orbital-server observer redials every ~5s) only ever
+     *  persists a lucky early snapshot — every refresh then re-downloads
+     *  the world (found live: "BindingError: Cannot pass deleted object"
+     *  from the un-retired initial-save timer firing after close). */
+    private persistentFinalFlush: (() => Promise<void>) | null = null;
     private schemas: SchemaEntry[];
     private modelMap: Map<string, ModelConstructor>;
 
@@ -306,15 +314,28 @@ export class Lattice {
 
         // close() must be able to retire all of this — reopen loops (the
         // embed's reconnect controller) would otherwise accumulate a timer,
-        // two listeners, and a live wasm sqlite handle per cycle.
+        // two listeners, and a live wasm sqlite handle per cycle. NOTE the
+        // initial-save timer is retired here too: it holds `db` in its
+        // closure, and firing after close() deleted the wasm object was the
+        // observed "Cannot pass deleted object as a pointer" failure that
+        // silently killed OPFS persistence for reopen-loop consumers.
         lattice.housekeepingCleanup = () => {
             clearInterval(snapshotTimer);
+            if (initialSaveTimer) { clearTimeout(initialSaveTimer); initialSaveTimer = null; }
             if (typeof document !== 'undefined') {
                 document.removeEventListener('visibilitychange', onVisibility);
             }
             if (typeof window !== 'undefined') {
                 window.removeEventListener('pagehide', onPagehide);
             }
+        };
+        // The close-time snapshot is the MOST valuable one — it carries the
+        // resume cursor of everything this session applied. Drain any
+        // in-flight save first (two concurrent createWritable() streams on
+        // one snapshot file would race), then take one final snapshot.
+        lattice.persistentFinalFlush = async () => {
+            while (snapshotInFlight) await new Promise((r) => setTimeout(r, 25));
+            await Lattice.saveSnapshot(path, db);
         };
 
         // Mark dirty when data changes (for snapshot saves)
@@ -374,6 +395,10 @@ export class Lattice {
     private static async saveSnapshot(path: string, db: LatticeWasm): Promise<void> {
         try {
             if (!navigator?.storage?.getDirectory) return;
+            // A deleted wasm object throws BindingError on ANY method call —
+            // a save that lost the race with close() must be a no-op, not a
+            // dirty-window-eating failure.
+            if ((db as unknown as { isDeleted?: () => boolean }).isDeleted?.()) return;
 
             // Flush WAL into main database file
             db.walCheckpoint();
@@ -972,10 +997,23 @@ export class Lattice {
             this.workerApi = null;
         }
 
-        // Retire openPersistent's snapshot timer + page-lifecycle listeners.
+        // Retire openPersistent's snapshot timer + page-lifecycle listeners
+        // FIRST (nothing may schedule a save once teardown begins)…
         if (this.housekeepingCleanup) {
             this.housekeepingCleanup();
             this.housekeepingCleanup = null;
+        }
+        // …then take the close-time snapshot while the wasm instance is
+        // still alive. Best-effort: a failed final save costs a larger
+        // delta on next open, never corruption (createWritable is
+        // swap-on-close).
+        if (this.persistentFinalFlush) {
+            try {
+                await this.persistentFinalFlush();
+            } catch (err) {
+                console.warn('[Lattice.close] final snapshot failed:', err);
+            }
+            this.persistentFinalFlush = null;
         }
 
         // Destroy the wasm instance — frees the sqlite connection and, via
