@@ -10,6 +10,9 @@ export {
     isModel, getTableName, getPropertySchemas, buildSchemas, discoverModels, hydrateInstance,
 } from './decorators';
 export { DYNAMIC_OBJECT, PROPERTY_SCHEMA, isWasmReady } from './storage';
+// Diagnostic: sync sockets still CONNECTING/OPEN. Must not grow across
+// open/close cycles — see ./sync-socket.
+export { liveSyncSocketCount } from './sync-socket';
 export { QueryNode, createQueryProxy } from './query';
 export type { QueryProxy } from './query';
 export type { PropertySchema } from './storage';

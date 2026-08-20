@@ -4,6 +4,14 @@ import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstanc
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
 import { safeRandomUUID } from './uuid';
+import {
+    installSyncSocketTracker,
+    captureSyncSockets,
+    adoptSyncSocket,
+    claimSyncSockets,
+    releaseSyncSockets,
+    type TrackedSyncSocket,
+} from './sync-socket';
 
 /**
  * Represents an audit log entry from the database.
@@ -87,6 +95,9 @@ export class Lattice {
      *  the world (found live: "BindingError: Cannot pass deleted object"
      *  from the un-retired initial-save timer firing after close). */
     private persistentFinalFlush: (() => Promise<void>) | null = null;
+    /** The sync WebSocket(s) this instance holds — see ./sync-socket. Empty
+     *  when sync is not configured. */
+    private syncSockets: TrackedSyncSocket[] = [];
     private schemas: SchemaEntry[];
     private modelMap: Map<string, ModelConstructor>;
 
@@ -131,6 +142,57 @@ export class Lattice {
             setWasmModule(wasmModule);
         }
         wasmModule._lattice_set_log_level(level);
+    }
+
+    /**
+     * Build the wasm instance and take ownership of whatever sync socket it
+     * opened.
+     *
+     * The socket is created wasm-side, synchronously inside the C++
+     * constructor (`setup_sync_if_configured` -> `synchronizer::connect` ->
+     * `new WebSocket(...)` through `val::global`), so the capture window
+     * around `make()` attributes it exactly. Two outcomes are both normal:
+     *
+     * - one socket captured: this instance built a fresh `swift_lattice` and
+     *   owns its transport;
+     * - none captured: `LatticeCache::get_or_create` returned a CACHED
+     *   `swift_lattice` for this path+url+schema, so this instance inherits a
+     *   sibling's live transport. Adopt it under refcount — closing it when
+     *   only one of the two holders goes away would cut sync out from under
+     *   the other.
+     *
+     * @see ./sync-socket for why close() has to do this from JS at all.
+     */
+    private static constructWithSyncSocket(
+        syncUrl: string | undefined,
+        make: () => LatticeWasm
+    ): { db: LatticeWasm; sockets: TrackedSyncSocket[] } {
+        if (!syncUrl) return { db: make(), sockets: [] };
+
+        installSyncSocketTracker();
+        const { value: db, sockets } = captureSyncSockets(make);
+
+        let owned = sockets;
+        if (owned.length === 0) {
+            const inherited = adoptSyncSocket(syncUrl);
+            if (inherited) {
+                owned = [inherited];
+            } else {
+                // No new socket and nothing live to inherit. Either the wasm
+                // reused a cached instance whose transport a previous close()
+                // already tore down (it cannot redial — schedule_reconnect is
+                // compiled out on Emscripten), or the tracker was installed
+                // too late. Both are silent-no-sync states, so say so.
+                console.warn(
+                    '[Lattice] sync configured but no live sync socket for',
+                    syncUrl,
+                    '— this open reused a wasm instance with no usable transport;',
+                    'reload the page to redial.'
+                );
+            }
+        }
+        claimSyncSockets(owned);
+        return { db, sockets: owned };
     }
 
     /**
@@ -189,47 +251,51 @@ export class Lattice {
         if (isInMemory) {
             // In-memory: just use main thread
             console.log('[Lattice] Creating in-memory database');
-            let db;
-            if (schemaVersion && migrationFn) {
-                // Migration-aware constructor
-                const jsMigrationCallback = (ctx: any) => {
-                    const migrationCtx: MigrationContext = {
-                        pendingChanges: () => ctx.pendingChanges as TableChanges[],
-                        hasChangesFor: (tableName: string) => {
-                            return (ctx.pendingChanges as TableChanges[]).some(
-                                (c: TableChanges) => c.tableName === tableName &&
-                                    (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
-                            );
-                        },
-                        renameProperty: (tableName: string, oldName: string, newName: string) => {
-                            // Call C++ via the context pointer
-                            wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
-                        },
-                        deleteAll: (tableName: string) => {
-                            wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
-                        },
-                        executeSql: (sql: string) => {
-                            wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
-                        },
-                        enumerateObjects: () => {
-                            // Complex operation — not exposed in initial version
-                            console.warn('enumerateObjects not yet supported in WASM migrations');
-                        },
+            const makeDb = (): LatticeWasm => {
+                if (schemaVersion && migrationFn) {
+                    // Migration-aware constructor
+                    const jsMigrationCallback = (ctx: any) => {
+                        const migrationCtx: MigrationContext = {
+                            pendingChanges: () => ctx.pendingChanges as TableChanges[],
+                            hasChangesFor: (tableName: string) => {
+                                return (ctx.pendingChanges as TableChanges[]).some(
+                                    (c: TableChanges) => c.tableName === tableName &&
+                                        (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
+                                );
+                            },
+                            renameProperty: (tableName: string, oldName: string, newName: string) => {
+                                // Call C++ via the context pointer
+                                wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
+                            },
+                            deleteAll: (tableName: string) => {
+                                wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
+                            },
+                            executeSql: (sql: string) => {
+                                wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
+                            },
+                            enumerateObjects: () => {
+                                // Complex operation — not exposed in initial version
+                                console.warn('enumerateObjects not yet supported in WASM migrations');
+                            },
+                        };
+                        migrationFn(migrationCtx);
                     };
-                    migrationFn(migrationCtx);
-                };
-                db = new wasmModule.Lattice(
-                    path, schemas,
-                    syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
-                    schemaVersion, jsMigrationCallback
-                );
-            } else if (syncConfig?.websocketUrl) {
-                console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-                db = new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-            } else {
-                db = new wasmModule.Lattice(path, schemas);
-            }
-            return new Lattice(db, schemas, modelMap);
+                    return new wasmModule.Lattice(
+                        path, schemas,
+                        syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
+                        schemaVersion, jsMigrationCallback
+                    );
+                } else if (syncConfig?.websocketUrl) {
+                    console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
+                    return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
+                } else {
+                    return new wasmModule.Lattice(path, schemas);
+                }
+            };
+            const { db, sockets } = Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb);
+            const lattice = new Lattice(db, schemas, modelMap);
+            lattice.syncSockets = sockets;
+            return lattice;
         } else {
             // Persistent: use worker for OPFS + main thread for live objects
             return Lattice.openPersistent(path, schemas, modelMap, syncConfig);
@@ -260,14 +326,15 @@ export class Lattice {
         }
 
         // Open with named path (MEMFS) + sync
-        let db;
-        if (syncConfig?.websocketUrl) {
-            console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-            db = new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-        } else {
-            db = new wasmModule.Lattice(path, schemas);
-        }
+        const { db, sockets } = Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, () => {
+            if (syncConfig?.websocketUrl) {
+                console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
+                return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
+            }
+            return new wasmModule.Lattice(path, schemas);
+        });
         const lattice = new Lattice(db, schemas, modelMap);
+        lattice.syncSockets = sockets;
 
         // Set up periodic OPFS snapshot saves (every 15s when dirty)
         let snapshotDirty = false;
@@ -979,6 +1046,32 @@ export class Lattice {
     async close(): Promise<void> {
         console.log('[Lattice.close] Closing database...');
 
+        // Sever the sync transport FIRST. Two reasons it leads:
+        //
+        // 1. It is the leak this method exists to stop. `db.delete()` below
+        //    does NOT reach the C++ teardown that would disconnect the socket:
+        //    no `close`/`disconnect` is registered on the embind Lattice class,
+        //    and `~JsLattice`'s `releaseSwiftLatticeRef` underflows a refcount
+        //    that wasm/bindings.cpp never retained, so `~lattice_db` — and with
+        //    it `teardown_sync()` — never runs. Full derivation in
+        //    ./sync-socket. Every close() therefore used to leave a live socket
+        //    behind (and a per-connection Lattice open on the server); a page
+        //    redialing every 5s accumulated them.
+        // 2. Quiescing the socket before the final snapshot makes that snapshot
+        //    deterministic: no remote apply can land between walCheckpoint()
+        //    and the MEMFS read that follows it.
+        //
+        // Refcounted — a sibling Lattice sharing this wasm instance's transport
+        // keeps it open. Deliberately silent: the wasm's close handler is
+        // detached first, so an app-level reconnect controller listening via
+        // onSyncState does not hear this teardown and redial into it (same
+        // contract as the C++ disconnect()).
+        if (this.syncSockets.length > 0) {
+            const closed = releaseSyncSockets(this.syncSockets, wasmModule);
+            this.syncSockets = [];
+            console.log(`[Lattice.close] sync sockets released (${closed} closed)`);
+        }
+
         // Remove sync observer
         if (this.syncObserverId) {
             this.syncObserverId();
@@ -1017,13 +1110,19 @@ export class Lattice {
             this.persistentFinalFlush = null;
         }
 
-        // Destroy the wasm instance — frees the sqlite connection and, via
-        // the synchronizer's destructor, disconnects the sync socket (the
-        // transport clears its callbacks before close, so teardown emits no
-        // events and queued frames are purged — see bindings.cpp
-        // disconnect()). Without this every close leaked a live wasm
-        // sqlite handle on the same MEMFS file the next open's snapshot
-        // restore overwrites.
+        // Destroy the embind wrapper. This runs `~JsLattice`, which is where
+        // the wasm-side teardown SHOULD continue — `releaseSwiftLatticeRef` ->
+        // `~swift_lattice` -> `~lattice_db` -> `teardown_sync()`. It does not:
+        // `swift_lattice_ref` is handed out with `ref_count_ == 0` (the
+        // factories return UNRETAINED and every LatticeCAPI open pairs them
+        // with `ref->retain()`; wasm/bindings.cpp does not), so `release()`
+        // decrements to -1, never frees the ref, and the sqlite connection,
+        // synchronizer and transport all outlive this call. Fixing that needs
+        // a wasm rebuild (one `ref->retain()` after `swift_lattice_ref::create`
+        // in wasm/bindings.cpp). Until then the socket teardown above is the
+        // part JS can enforce, and this delete() still frees the wrapper and
+        // makes further use of `this.db` throw a BindingError rather than
+        // silently operating on a closed database.
         try {
             (this.db as unknown as { delete?: () => void }).delete?.();
         } catch (err) {
