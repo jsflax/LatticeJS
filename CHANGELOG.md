@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Orphaned-write drain.** Writes accepted between a sync socket's death and
+  the app noticing were stranded forever: browser builds never redial, `close()`
+  cannot drain a dead socket, and the standard recovery — reopening under a
+  fresh store name — starts from a store whose catch-up cannot contain writes
+  the server never saw. Three new entry points make that set readable and
+  re-deliverable, all JS-side over existing bindings:
+  `Lattice.pendingUploads(path, models)` (storage-only read of a store's
+  un-ACKed rows, as plain JSON — opens no socket),
+  `instance.drainPendingFrom(previousPath)` (re-offers them through a live
+  synced instance so they upload), and the `resumePendingFrom` option on
+  `Lattice.open()`, which runs that drain automatically once the new store's
+  socket is open and its catch-up has gone quiet. Idempotent: re-draining an
+  already-delivered store is a no-op. See `src/pending-drain.ts`.
+
 ## [1.0.0] - 2026-07-25
 
 ### Changed
