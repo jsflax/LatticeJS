@@ -10,8 +10,18 @@ import {
     adoptSyncSocket,
     claimSyncSockets,
     releaseSyncSockets,
+    whenSyncSocketOpen,
     type TrackedSyncSocket,
 } from './sync-socket';
+import {
+    readPendingUploads,
+    drainPendingUploads,
+    waitForCatchUpQuiet,
+    emptyDrainReport,
+    type PendingUploadRow,
+    type PendingSelectOptions,
+    type DrainReport,
+} from './pending-drain';
 
 /**
  * Represents an audit log entry from the database.
@@ -77,6 +87,13 @@ export enum LogLevel {
 // Global WASM module cache
 let wasmModule: any = null;
 
+/** How long `resumePendingFrom` waits for the new store's socket to open. */
+const RESUME_CONNECT_TIMEOUT_MS = 20000;
+/** How long the received counter must hold still before a resume drain runs. */
+const RESUME_QUIET_MS = 1200;
+/** Hard cap on the settle wait — past this the resume drain runs anyway. */
+const RESUME_MAX_WAIT_MS = 20000;
+
 /**
  * Main Lattice class for browser-based database operations.
  *
@@ -127,10 +144,11 @@ export class Lattice {
     };
 
     /**
-     * Set the global C++ log level.
-     * Loads WASM if not already loaded.
+     * Load and cache the WASM module (idempotent). Every entry point that
+     * touches wasm — open(), setLogLevel(), pendingUploads() — goes through
+     * here so a storage-only read can be the FIRST thing a page does.
      */
-    static async setLogLevel(level: LogLevel) {
+    private static async ensureWasm(): Promise<any> {
         if (!wasmModule) {
             const module = await import(/* @vite-ignore */ wasmJsUrl);
             wasmModule = await module.default({
@@ -139,8 +157,18 @@ export class Lattice {
                     return p;
                 }
             });
+            // Make WASM available for model instances
             setWasmModule(wasmModule);
         }
+        return wasmModule;
+    }
+
+    /**
+     * Set the global C++ log level.
+     * Loads WASM if not already loaded.
+     */
+    static async setLogLevel(level: LogLevel) {
+        await Lattice.ensureWasm();
         wasmModule._lattice_set_log_level(level);
     }
 
@@ -212,6 +240,26 @@ export class Lattice {
             };
             schemaVersion?: number;
             migration?: (ctx: MigrationContext) => void;
+            /**
+             * Path of the store this one REPLACES — the previous name in the
+             * "redial under a fresh store name" pattern.
+             *
+             * Writes that landed in that store after its sync socket died are
+             * stranded there: the server never got them, so this store's
+             * catch-up does not contain them, and nothing else ever revisits
+             * that store. With this option set, once THIS store's socket is
+             * open and its catch-up has gone quiet, those rows are re-offered
+             * here and upload on the live socket — equivalent to calling
+             * `drainPendingFrom(previousPath)` by hand at the right moment.
+             *
+             * Requires `sync` (a store with no transport can ship nothing).
+             * Never blocks `open()`. Idempotent: rows this store already has
+             * are skipped, so passing the same previous path on every open is
+             * safe. See ./pending-drain.
+             */
+            resumePendingFrom?: string;
+            /** Result of the `resumePendingFrom` drain, when it runs. */
+            onResumePending?: (report: DrainReport) => void;
         }
     ): Promise<Lattice> {
         // Build schemas from models
@@ -227,26 +275,13 @@ export class Lattice {
         }
 
         // Load WASM module if not already loaded (needed for main thread)
-        if (!wasmModule) {
-            console.log('[Lattice] Loading WASM...');
-
-            const module = await import(/* @vite-ignore */ wasmJsUrl);
-            wasmModule = await module.default({
-                locateFile: (p: string) => {
-                    if (p.endsWith('.wasm')) return wasmBinaryUrl;
-                    return p;
-                }
-            });
-            console.log('[Lattice] WASM initialized');
-
-            // Make WASM available for model instances
-            setWasmModule(wasmModule);
-        }
+        await Lattice.ensureWasm();
 
         const isInMemory = path === ':memory:' || path.startsWith(':memory:');
         const syncConfig = options?.sync;
         const schemaVersion = options?.schemaVersion;
         const migrationFn = options?.migration;
+        let lattice: Lattice;
 
         if (isInMemory) {
             // In-memory: just use main thread
@@ -293,13 +328,23 @@ export class Lattice {
                 }
             };
             const { db, sockets } = Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb);
-            const lattice = new Lattice(db, schemas, modelMap);
+            lattice = new Lattice(db, schemas, modelMap);
             lattice.syncSockets = sockets;
-            return lattice;
         } else {
             // Persistent: use worker for OPFS + main thread for live objects
-            return Lattice.openPersistent(path, schemas, modelMap, syncConfig);
+            lattice = await Lattice.openPersistent(path, schemas, modelMap, syncConfig);
         }
+
+        // Rescue whatever the store this one replaces never managed to upload.
+        // Scheduled, never awaited: open() must not wait on a handshake.
+        if (options?.resumePendingFrom) {
+            lattice.scheduleResumeDrain(
+                options.resumePendingFrom,
+                !!syncConfig?.websocketUrl,
+                options.onResumePending,
+            );
+        }
+        return lattice;
     }
 
     /**
@@ -512,6 +557,187 @@ export class Lattice {
         } catch {
             return false;
         }
+    }
+
+    // ========================================================================
+    // Orphaned-write drain
+    //
+    // A write accepted between the sync socket's death and the app noticing is
+    // journalled into that store's AuditLog with isSynchronized = 0 and never
+    // ships: browser builds do not redial (`schedule_reconnect()` is
+    // `#ifdef __EMSCRIPTEN__ return;`), close() cannot drain a dead socket, and
+    // the app's recovery — reopen under a FRESH store name — starts from an
+    // empty store whose catch-up cannot contain writes the server never saw.
+    // These two entry points make that set readable and re-deliverable from JS.
+    // Full derivation, and the three layers of idempotency, in ./pending-drain.
+    // ========================================================================
+
+    /**
+     * Open `path` STORAGE-ONLY (never with sync — this must not dial) and read
+     * the writes it still owes upstream.
+     *
+     * Storage-only means no `websocketUrl` reaches the wasm constructor, so no
+     * socket is created, nothing is uploaded and nothing is mutated; this is a
+     * pure read of an abandoned store. Safe to call before any other Lattice is
+     * open — it loads the wasm module itself.
+     *
+     * @param path   the ABANDONED store's path (the previous name in a redial)
+     * @param models the same models the store was opened with — the wasm
+     *               constructor needs a schema to open a database at all, and
+     *               opening with a different one would migrate it
+     * @returns un-ACKed rows, oldest first, as plain JSON (see PendingUploadRow).
+     *          Journal them, count them, show them — or hand `path` to
+     *          {@link drainPendingFrom} to actually re-deliver them.
+     */
+    static async pendingUploads(
+        path: string,
+        models: ModelConstructor[],
+        options?: PendingSelectOptions,
+    ): Promise<PendingUploadRow[]> {
+        await Lattice.ensureWasm();
+        return Lattice.readPendingAt(path, buildSchemas(models), options);
+    }
+
+    /**
+     * Re-offer everything `previousPath` never managed to upload through THIS
+     * (live, synced) instance, so it uploads here.
+     *
+     * Each rescued row is replayed into this store and re-journalled with
+     * `isSynchronized = 0`, which is what the uploader picks up; the AuditLog
+     * INSERT itself wakes the synchronizer. Rows land at the tail of this
+     * store's log — after everything already caught up — which is the intended
+     * order: the server's replay is authoritative for what it knows, the
+     * rescued write is a later edit on top of it.
+     *
+     * Idempotent at three levels (this method's own globalId check, the
+     * value-guarded upsert the apply generates, and the server's dedupe), so
+     * re-draining an already-delivered store is a no-op, not a duplicate.
+     *
+     * Call it AFTER this instance's sync is connected and caught up — or let
+     * `resumePendingFrom` do exactly that for you.
+     *
+     * @param previousPath the abandoned store. Must not be this store's path.
+     */
+    async drainPendingFrom(previousPath: string, options?: PendingSelectOptions): Promise<DrainReport> {
+        const report = emptyDrainReport();
+        if (!previousPath) return report;
+        if (previousPath === this.getPath()) {
+            // Not an error, but never useful: every row's globalId is already
+            // in this store's log, so the drain would report nothing but
+            // alreadyPresent. Say so instead of doing a pointless full pass.
+            console.warn('[Lattice] drainPendingFrom: previous path is this store — nothing to drain');
+            return report;
+        }
+        if (this.syncSockets.length === 0) {
+            // The rows would land here as pending and stay pending: nothing
+            // would ship them, and the app would have to drain THIS store next.
+            console.warn(
+                '[Lattice] drainPendingFrom: this instance has no sync socket —',
+                'draining would only move the orphans, not deliver them',
+            );
+        }
+
+        await Lattice.ensureWasm();
+        const rows = await Lattice.readPendingAt(previousPath, this.schemas, options);
+        if (rows.length === 0) return report;
+
+        const drained = await drainPendingUploads(this.db, rows, {
+            ...options,
+            tables: this.schemas.map((s) => s.tableName),
+        });
+        console.log(
+            `[Lattice] drained ${drained.applied.length}/${drained.found} pending row(s) from ${previousPath}` +
+            ` (already present: ${drained.alreadyPresent}, unknown table: ${drained.unknownTable}` +
+            `, failed: ${drained.failed.length})`
+        );
+        return drained;
+    }
+
+    /**
+     * Open `path` storage-only, read its pending set, and let the handle go.
+     *
+     * OPFS RESTORE RULE: after a page reload the abandoned store exists only as
+     * an OPFS snapshot, so it has to be restored into MEMFS before sqlite can
+     * see it — but if the MEMFS file is already there (same page session, the
+     * store was open a moment ago) restoring would overwrite the file a live
+     * sqlite handle may still hold open. So: restore only when MEMFS has
+     * nothing.
+     */
+    private static async readPendingAt(
+        path: string,
+        schemas: SchemaEntry[],
+        options?: PendingSelectOptions,
+    ): Promise<PendingUploadRow[]> {
+        let memfsHasIt = false;
+        try {
+            memfsHasIt = !!wasmModule.FS?.analyzePath?.(path)?.exists;
+        } catch { /* no FS shim — treat as absent and let the restore decide */ }
+        if (!memfsHasIt) {
+            const restored = await Lattice.restoreSnapshot(path);
+            if (!restored) {
+                console.warn('[Lattice] no store to read pending uploads from at', path);
+                return [];
+            }
+        }
+
+        let db: LatticeWasm | null = null;
+        try {
+            // NO sync arguments: this construction must not create a socket.
+            db = new wasmModule.Lattice(path, schemas) as LatticeWasm;
+            return readPendingUploads(db, options);
+        } catch (err) {
+            console.warn('[Lattice] reading pending uploads failed for', path, err);
+            return [];
+        } finally {
+            // Frees the embind wrapper. The wasm instance behind it survives
+            // (the refcount underflow documented in ./sync-socket), which is
+            // exactly what we want if this path is also open elsewhere.
+            try {
+                (db as unknown as { delete?: () => void } | null)?.delete?.();
+            } catch { /* already gone */ }
+        }
+    }
+
+    /**
+     * `resumePendingFrom`'s timing: wait for THIS store's socket to open, wait
+     * for its catch-up to go quiet, then drain. Fire-and-forget by design —
+     * open() returns immediately and the rescue happens when it can.
+     */
+    private scheduleResumeDrain(
+        previousPath: string,
+        synced: boolean,
+        onReport?: (report: DrainReport) => void,
+    ): void {
+        if (!synced) {
+            console.warn(
+                '[Lattice] resumePendingFrom ignored: this store has no sync config,',
+                'so rescued writes would have no transport to ship them.',
+            );
+            return;
+        }
+        void (async () => {
+            try {
+                const opened = await whenSyncSocketOpen(this.syncSockets, RESUME_CONNECT_TIMEOUT_MS);
+                if (!opened) {
+                    // Draining now would relocate the orphans into a store that
+                    // also cannot ship them. Leave them where they are so the
+                    // next open can still name the ORIGINAL path.
+                    console.warn(
+                        '[Lattice] resumePendingFrom: sync never connected —',
+                        `leaving pending writes in ${previousPath} for a later open`,
+                    );
+                    return;
+                }
+                await waitForCatchUpQuiet(() => this.getSyncProgress()?.received ?? 0, {
+                    quietMs: RESUME_QUIET_MS,
+                    maxWaitMs: RESUME_MAX_WAIT_MS,
+                });
+                const report = await this.drainPendingFrom(previousPath);
+                onReport?.(report);
+            } catch (err) {
+                console.warn('[Lattice] resumePendingFrom drain failed:', err);
+            }
+        })();
     }
 
     /**
