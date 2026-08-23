@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The SharedWorker path — a total-failure hazard guarding nothing.**
+  `openPersistent()` constructed a SharedWorker unconditionally and outside any
+  `try`, and the module opened a `lattice-debug` BroadcastChannel at import
+  time. Where those globals do not exist — Safari < 16.4, iOS WKWebView,
+  embedded webviews — `new SharedWorker(...)` threw `ReferenceError` and
+  `Lattice.open()` on any persistent path REJECTED: the library did not work at
+  all on those engines. What it bought was nothing. The worker's `init()` was a
+  no-op; its `open()` constructed a `BroadcastChannel` that was never listened
+  on and never posted to; the page never joined that channel
+  (`broadcastChannel` was only ever read by `close()`); and in production
+  bundles Vite inlined the 2.7 KB bootstrap as a `data:` URL, from which its
+  relative `import('./shared-impl')` can never resolve (verified in a shipped
+  bundle — the base64 payload still contains the bare `import('./shared-impl')`).
+  There was no cross-tab relay to lose, so the path is gone rather than
+  guarded: `createSharedWorker`, the `sharedWorker`/`workerApi`/
+  `broadcastChannel` fields and their `close()` teardown, the "initializing
+  WASM / opening DB" console narration for a worker that did neither, and
+  `src/worker/` entirely (nothing imported it — checked in-repo and across both
+  consuming apps). With it go the `./worker` package export and the `comlink`
+  dependency, whose only users were those files. Tabs converge through the sync
+  server, as they already did. Covered by `test/no-shared-worker.test.ts`,
+  which opens a persistent store with `SharedWorker` (and `BroadcastChannel`)
+  stubbed away.
+
 ### Added
 - **Orphaned-write drain.** Writes accepted between a sync socket's death and
   the app noticing were stranded forever: browser builds never redial, `close()`

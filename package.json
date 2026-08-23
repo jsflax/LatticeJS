@@ -10,10 +10,6 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./worker": {
-      "import": "./dist/worker/index.js",
-      "types": "./dist/worker/index.d.ts"
-    },
     "./vite": {
       "import": "./dist/vite-plugin.js",
       "types": "./dist/vite-plugin.d.ts"
@@ -28,9 +24,6 @@
     "test:watch": "vitest",
     "test:browser": "vite --open /test/browser/index.html",
     "clean": "rm -rf dist wasm/build"
-  },
-  "dependencies": {
-    "comlink": "^4.4.1"
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.28.0",
