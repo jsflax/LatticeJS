@@ -565,3 +565,40 @@ describe('whenSyncSocketOpen', () => {
         await expect(waiting).resolves.toBe(true);
     });
 });
+
+describe('waitForCatchUpQuiet minWaitMs', () => {
+    // Socket-open is not catch-up-begun: a quiet window that elapses at
+    // received === 0 before the server's replay starts must not fire the
+    // drain. minWaitMs is that floor.
+    it('does not report quiet before minWaitMs even when received never moves', async () => {
+        let t = 0;
+        const result = await waitForCatchUpQuiet(() => 0, {
+            quietMs: 50,
+            minWaitMs: 300,
+            pollMs: 25,
+            maxWaitMs: 10_000,
+            now: () => t,
+            sleep: async (ms) => { t += ms; },
+        });
+        expect(result.quiet).toBe(true);
+        expect(result.waitedMs).toBeGreaterThanOrEqual(300);
+    });
+
+    it('still resolves promptly once minWaitMs has passed and the counter is still', async () => {
+        let t = 0;
+        const result = await waitForCatchUpQuiet(() => 0, {
+            quietMs: 50,
+            minWaitMs: 100,
+            pollMs: 25,
+            maxWaitMs: 10_000,
+            now: () => t,
+            sleep: async (ms) => { t += ms; },
+        });
+        expect(result.quiet).toBe(true);
+        expect(result.waitedMs).toBeLessThan(400);
+    });
+
+    it('a drain report is born without the missing flag', () => {
+        expect(emptyDrainReport().sourceMissing).toBe(false);
+    });
+});

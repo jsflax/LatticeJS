@@ -154,6 +154,10 @@ export interface DrainOptions extends PendingSelectOptions {
 }
 
 export interface DrainReport {
+    /** The source store does not exist (never created, snapshot gone, or a
+     *  wrong path) — DISTINCT from an existing store with nothing pending.
+     *  Everything else in the report is zero/empty when this is set. */
+    sourceMissing: boolean;
     /** Pending rows read out of the source store. */
     found: number;
     /** Dropped: the target's `AuditLog` already has this change. */
@@ -172,6 +176,7 @@ export interface DrainReport {
 }
 
 const EMPTY_REPORT: DrainReport = {
+    sourceMissing: false,
     found: 0, alreadyPresent: 0, unknownTable: 0, offered: 0, applied: [], failed: [],
 };
 
@@ -185,23 +190,15 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 /**
  * Rows in `auditLogJson` that are still owed upstream, oldest first.
  *
- * `getPendingAuditLog()` is a misnomer inherited from the cross-tab relay: it
- * returns EVERY `AuditLog` row — it calls `query_audit_log` with
- * `only_unsynced = false`, so synced rows come back too and a new tab can
- * bootstrap from a sibling. The pending set is the `isSynchronized === false`
- * subset — the same predicate the wasm uploader uses for entries that have no
- * per-sync_id state row.
- *
- * LIMITATION (no binding for it): per-`sync_id` state lives in
- * `_lattice_sync_state`, and nothing in `EMSCRIPTEN_BINDINGS(lattice)` exposes
- * a row-returning SQL surface (`debugQueryCount` returns an int; there is no
- * `sql()`), so JS cannot see "synced for sync_id A but not B". For the browser
- * client that gap is empty in practice: a page runs ONE synchronizer per store,
- * and single-sync_id ACKs go through `mark_audit_entries_synced`, which sets
- * the global `AuditLog.isSynchronized` flag this reads. A store with several
- * live sync_ids (IPC relay + WSS) would need a `sql()` binding to be precise;
- * this filter would then be a superset — it can re-offer a row one transport
- * already ACKed, which the target and the server both dedupe away.
+ * The AUTHORITATIVE source is `getUnshippedAuditLog()` (wasm/bindings.cpp):
+ * unsynced rows with NO `_lattice_sync_state` ack mark — the drain predicate
+ * in SQL, which excludes rows the synchronizer DOWNLOADED (those carry a
+ * per-sync_id ack the global `isSynchronized` flag doesn\'t show until heal
+ * collapses it) while keeping stranded local writes, sibling-relayed rows,
+ * and second-generation rescues. This function is the JS-side belt on top:
+ * whatever JSON it is given, it drops `isSynchronized` rows, dedupes, and
+ * restores write order. Fed from `getPendingAuditLog()` (which returns EVERY
+ * row) it over-selects downloads — use the unshipped binding for drains.
  */
 export function selectPendingUploads(
     auditLogJson: string,
@@ -345,6 +342,15 @@ export async function drainPendingUploads(
 export interface CatchUpQuietOptions {
     /** How long `received` must hold still to count as settled (default 1000ms). */
     quietMs?: number;
+    /**
+     * Never report quiet before this much time has passed (default 0).
+     * Socket-open is NOT catch-up-begun: the server\'s replay can start after
+     * a quiet window has already elapsed at `received === 0`, and a drain
+     * that fires in that gap runs BEFORE catch-up — the exact inversion the
+     * ordering note warns about. A minimum wait gives the first frame time
+     * to arrive so the stillness signal measures something real.
+     */
+    minWaitMs?: number;
     /** Hard cap; past this the drain runs anyway (default 15000ms). */
     maxWaitMs?: number;
     /** Poll period (default 250ms). */
@@ -380,6 +386,7 @@ export async function waitForCatchUpQuiet(
     options: CatchUpQuietOptions = {},
 ): Promise<CatchUpQuietResult> {
     const quietMs = options.quietMs ?? 1000;
+    const minWaitMs = options.minWaitMs ?? 0;
     const maxWaitMs = options.maxWaitMs ?? 15000;
     const pollMs = Math.max(1, options.pollMs ?? 250);
     const sleep = options.sleep ?? defaultSleep;
@@ -391,7 +398,7 @@ export async function waitForCatchUpQuiet(
 
     for (;;) {
         const elapsed = now() - started;
-        if (now() - lastChangedAt >= quietMs) {
+        if (elapsed >= minWaitMs && now() - lastChangedAt >= quietMs) {
             return { quiet: true, waitedMs: elapsed, received: last };
         }
         if (elapsed >= maxWaitMs) {

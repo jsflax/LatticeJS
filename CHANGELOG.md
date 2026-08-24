@@ -1,3 +1,22 @@
+## Unreleased — orphaned-write drain fix round
+
+- **Read-only audit open** (arity-3 `Lattice` constructor → `create_dynamic`): reading an
+  abandoned store's pending set no longer runs `ensure_tables`/`heal_collapsed_sync_state`
+  (the write-capable constructor mutated the store it audited), never migrates on schema
+  drift (schema is reconstructed from the file), bypasses the instance key-cache, and —
+  via the new `releaseStorage()` binding — actually closes the sqlite connection
+  (`.delete()` alone freed only the JS wrapper: one leaked connection per abandoned store).
+- **`getUnshippedAuditLog()`**: the drain predicate in SQL — unsynced AND unmarked in
+  `_lattice_sync_state`. Rows the synchronizer *downloaded* carry a per-sync_id ack mark
+  and are now excluded; the previous JSON-side filter over `getPendingAuditLog()` was a
+  superset that re-offered the entire downloaded room on every rescue.
+- **Missing ≠ empty**: `pendingUploads()` returns `null` (and `DrainReport` gains
+  `sourceMissing`) when no store exists at the path — a wrong name no longer reads as
+  "nothing was stranded".
+- **Drain ordering floor**: `waitForCatchUpQuiet` gains `minWaitMs`
+  (`resumePendingFrom` uses 3s) — socket-open is not catch-up-begun, and a quiet window
+  elapsing at `received === 0` before the server's replay starts must not fire the drain.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.

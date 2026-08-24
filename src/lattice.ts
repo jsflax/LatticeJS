@@ -14,7 +14,7 @@ import {
     type TrackedSyncSocket,
 } from './sync-socket';
 import {
-    readPendingUploads,
+    selectPendingUploads,
     drainPendingUploads,
     waitForCatchUpQuiet,
     emptyDrainReport,
@@ -91,6 +91,10 @@ let wasmModule: any = null;
 const RESUME_CONNECT_TIMEOUT_MS = 20000;
 /** How long the received counter must hold still before a resume drain runs. */
 const RESUME_QUIET_MS = 1200;
+/** Floor on the settle wait — socket-open is not catch-up-begun, so a quiet
+ *  window that elapses at `received === 0` before the server\'s replay even
+ *  starts must not trigger the drain (the ordering inversion). */
+const RESUME_MIN_WAIT_MS = 3000;
 /** Hard cap on the settle wait — past this the resume drain runs anyway. */
 const RESUME_MAX_WAIT_MS = 20000;
 
@@ -573,29 +577,30 @@ export class Lattice {
     // ========================================================================
 
     /**
-     * Open `path` STORAGE-ONLY (never with sync — this must not dial) and read
-     * the writes it still owes upstream.
-     *
-     * Storage-only means no `websocketUrl` reaches the wasm constructor, so no
-     * socket is created, nothing is uploaded and nothing is mutated; this is a
-     * pure read of an abandoned store. Safe to call before any other Lattice is
-     * open — it loads the wasm module itself.
+     * Open `path` READ-ONLY (the arity-3 audit constructor — no DDL, no
+     * heal, no change hook, no socket, no cache entry) and read the writes it
+     * still owes upstream via the unshipped predicate (unsynced AND unmarked
+     * in `_lattice_sync_state`, so downloaded rows are excluded). Nothing is
+     * mutated and the connection is really closed afterwards. Safe to call
+     * before any other Lattice is open — it loads the wasm module itself.
      *
      * @param path   the ABANDONED store's path (the previous name in a redial)
-     * @param models the same models the store was opened with — the wasm
-     *               constructor needs a schema to open a database at all, and
-     *               opening with a different one would migrate it
-     * @returns un-ACKed rows, oldest first, as plain JSON (see PendingUploadRow).
-     *          Journal them, count them, show them — or hand `path` to
-     *          {@link drainPendingFrom} to actually re-deliver them.
+     * @param models retained for API compatibility; the audit open
+     *               reconstructs the schema from the file and never migrates
+     * @returns un-ACKed rows, oldest first, as plain JSON (see
+     *          PendingUploadRow) — or **null when no store exists at `path`**
+     *          (never created, snapshot gone, or a wrong name), which is NOT
+     *          the same as an empty pending set. Journal them, count them,
+     *          show them — or hand `path` to {@link drainPendingFrom} to
+     *          actually re-deliver them.
      */
     static async pendingUploads(
         path: string,
         models: ModelConstructor[],
         options?: PendingSelectOptions,
-    ): Promise<PendingUploadRow[]> {
+    ): Promise<PendingUploadRow[] | null> {
         await Lattice.ensureWasm();
-        return Lattice.readPendingAt(path, buildSchemas(models), options);
+        return Lattice.readPendingAt(path, options);
     }
 
     /**
@@ -638,7 +643,16 @@ export class Lattice {
         }
 
         await Lattice.ensureWasm();
-        const rows = await Lattice.readPendingAt(previousPath, this.schemas, options);
+        const rows = await Lattice.readPendingAt(previousPath, options);
+        if (rows === null) {
+            // A missing store is NOT an empty one: the caller named a path
+            // that has nothing behind it (wrong name, or the snapshot is
+            // gone). Say so in the report instead of a zero that reads as
+            // "nothing was stranded".
+            console.warn('[Lattice] drainPendingFrom: no store exists at', previousPath);
+            report.sourceMissing = true;
+            return report;
+        }
         if (rows.length === 0) return report;
 
         const drained = await drainPendingUploads(this.db, rows, {
@@ -665,9 +679,8 @@ export class Lattice {
      */
     private static async readPendingAt(
         path: string,
-        schemas: SchemaEntry[],
         options?: PendingSelectOptions,
-    ): Promise<PendingUploadRow[]> {
+    ): Promise<PendingUploadRow[] | null> {
         let memfsHasIt = false;
         try {
             memfsHasIt = !!wasmModule.FS?.analyzePath?.(path)?.exists;
@@ -675,23 +688,39 @@ export class Lattice {
         if (!memfsHasIt) {
             const restored = await Lattice.restoreSnapshot(path);
             if (!restored) {
-                console.warn('[Lattice] no store to read pending uploads from at', path);
-                return [];
+                // MISSING, not empty — null so the caller can tell the two
+                // apart (a wrong path must not read as "nothing stranded").
+                return null;
             }
         }
 
         let db: LatticeWasm | null = null;
         try {
-            // NO sync arguments: this construction must not create a socket.
-            db = new wasmModule.Lattice(path, schemas) as LatticeWasm;
-            return readPendingUploads(db, options);
+            // READ-ONLY AUDIT OPEN (arity-3 constructor): no DDL, no
+            // heal_collapsed_sync_state, no change hook, no socket, no
+            // key-cache entry — reading an abandoned store mutates nothing
+            // and can never alias a later writable open. The schema is
+            // reconstructed from the file, so no drift can migrate it.
+            db = new wasmModule.Lattice(path, [], true) as LatticeWasm;
+        } catch (err) {
+            // The read-only open of an existing MEMFS file failing means the
+            // file is not a database this build can read — surface as
+            // missing/unreadable rather than an empty pending set.
+            console.warn('[Lattice] could not open store read-only at', path, err);
+            return null;
+        }
+        try {
+            // The unshipped set (owed upstream) — see types.ts; the JS-side
+            // select is the belt (order, dedupe, isSynchronized).
+            return selectPendingUploads(db.getUnshippedAuditLog(), options);
         } catch (err) {
             console.warn('[Lattice] reading pending uploads failed for', path, err);
             return [];
         } finally {
-            // Frees the embind wrapper. The wasm instance behind it survives
-            // (the refcount underflow documented in ./sync-socket), which is
-            // exactly what we want if this path is also open elsewhere.
+            // releaseStorage() drops the audit open\'s ONLY reference — the
+            // sqlite connection actually closes (embind .delete() alone frees
+            // just the wrapper and leaked one connection per abandoned store).
+            try { db.releaseStorage?.(); } catch { /* already gone */ }
             try {
                 (db as unknown as { delete?: () => void } | null)?.delete?.();
             } catch { /* already gone */ }
@@ -730,6 +759,7 @@ export class Lattice {
                 }
                 await waitForCatchUpQuiet(() => this.getSyncProgress()?.received ?? 0, {
                     quietMs: RESUME_QUIET_MS,
+                    minWaitMs: RESUME_MIN_WAIT_MS,
                     maxWaitMs: RESUME_MAX_WAIT_MS,
                 });
                 const report = await this.drainPendingFrom(previousPath);

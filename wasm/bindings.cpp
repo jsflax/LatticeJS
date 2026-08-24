@@ -2,6 +2,7 @@
 #include <emscripten/val.h>
 #include <emscripten.h>
 #include <sqlite3.h>
+#include <unordered_set>
 
 // WASMFS is only available when WASMFS=1 is set
 #ifdef __EMSCRIPTEN_WASM_WORKERS__
@@ -983,6 +984,34 @@ public:
     JsLattice(const std::string& path, const val& schemas)
         : JsLattice(path, schemas, "", "") {}
 
+    // Arity-3: READ-ONLY AUDIT OPEN (readOnlyAudit must be true; `schemas` is
+    // ignored — the schema is reconstructed from the file). Built for the
+    // orphaned-write drain (src/pending-drain.ts): reading an ABANDONED
+    // store's AuditLog must not mutate it, and the write-capable constructor
+    // does — ensure_tables + heal_collapsed_sync_state run before any read,
+    // and a schema drift would MIGRATE the file. `create_dynamic` opens
+    // read-only (no DDL, no change hook, no sync socket), bypasses the
+    // key-cache (ptr-registered only, so it can never alias a later writable
+    // open of the same path), and holds the ONLY shared_ptr — releaseStorage()
+    // really closes the connection. A missing file throws (SQLITE_CANTOPEN),
+    // which is the point: a missing store is an error the caller can tell
+    // apart from an empty one.
+    JsLattice(const std::string& path, const val& /*schemas*/, bool read_only_audit) {
+        if (!read_only_audit) {
+            throw_js_error("arity-3 Lattice constructor is the read-only audit open; pass true");
+        }
+        try {
+            swift_configuration config;
+            config.path = path;
+            config.sched = g_emscripten_scheduler;
+            ref_ = swift_lattice_ref::create_dynamic(config);
+        } catch (const std::exception& e) {
+            throw_js_error(std::string("Failed to open database read-only: ") + e.what());
+        } catch (...) {
+            throw_js_error("Failed to open database read-only: unknown error");
+        }
+    }
+
     // Constructor with sync configuration
     JsLattice(const std::string& path, const val& schemas,
               const std::string& websocket_url, const std::string& auth_token) {
@@ -1395,6 +1424,59 @@ public:
         } catch (const std::exception& e) {
             printf("[getPendingAuditLog] Error: %s\n", e.what());
             return "[]";
+        }
+    }
+
+    // The rows this store still OWES upstream — the drain predicate, in SQL.
+    // getPendingAuditLog() cannot express it: a row the SYNCHRONIZER applied
+    // (a download) is recorded isSynchronized=0 with its ACK in
+    // `_lattice_sync_state` (per-sync_id, invisible to the global flag until
+    // heal collapses it), while a stranded LOCAL write — and a row a drain or
+    // sibling relay applied — has no such mark. So: unsynced AND unmarked.
+    // Downloads excluded, local writes + second-generation rescues included,
+    // no reliance on isFromRemote heuristics.
+    std::string getUnshippedAuditLog() {
+        try {
+            auto& db = ref_->get()->db();
+            std::unordered_set<int64_t> acked;
+            if (db.table_exists("_lattice_sync_state")) {
+                auto rows = db.query(
+                    "SELECT DISTINCT audit_entry_id FROM _lattice_sync_state "
+                    "WHERE is_synchronized = 1", {});
+                for (const auto& row : rows) {
+                    auto it = row.find("audit_entry_id");
+                    if (it != row.end() && std::holds_alternative<int64_t>(it->second)) {
+                        acked.insert(std::get<int64_t>(it->second));
+                    }
+                }
+            }
+            auto entries = query_audit_log(db, true /*only_unsynced*/, std::nullopt);
+            std::string json = "[";
+            bool first = true;
+            for (const auto& entry : entries) {
+                if (acked.count(entry.id)) continue;
+                if (!first) json += ",";
+                first = false;
+                json += entry.to_json();
+            }
+            json += "]";
+            return json;
+        } catch (const std::exception& e) {
+            printf("[getUnshippedAuditLog] Error: %s\n", e.what());
+            return "[]";
+        }
+    }
+
+    // Release this handle's reference to the underlying store. For a
+    // read-only audit open (which holds the ONLY reference) this closes the
+    // sqlite connection — embind's .delete() alone frees just the wrapper
+    // and leaked one connection per abandoned store. Idempotent; every other
+    // method is invalid after this. Cached/writable instances shared with a
+    // live page merely drop one reference.
+    void releaseStorage() {
+        if (ref_) {
+            releaseSwiftLatticeRef(ref_);
+            ref_ = nullptr;
         }
     }
 
@@ -2122,6 +2204,7 @@ EMSCRIPTEN_BINDINGS(lattice) {
 
     class_<JsLattice>("Lattice")
         .constructor<std::string, val>()
+        .constructor<std::string, val, bool>()
         .constructor<std::string, val, std::string, std::string>()
         .constructor<std::string, val, std::string, std::string, int32_t, val>()
         .function("add", &JsLattice::add)
@@ -2140,6 +2223,8 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .property("path", &JsLattice::path)
         // Audit log / sync methods
         .function("getPendingAuditLog", &JsLattice::getPendingAuditLog)
+        .function("getUnshippedAuditLog", &JsLattice::getUnshippedAuditLog)
+        .function("releaseStorage", &JsLattice::releaseStorage)
         .function("walCheckpoint", &JsLattice::walCheckpoint)
         .function("applyRemoteChanges", &JsLattice::applyRemoteChanges)
         .function("markEntriesSynced", &JsLattice::markEntriesSynced)
