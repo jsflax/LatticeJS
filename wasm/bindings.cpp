@@ -979,6 +979,10 @@ void throw_js_error(const std::string& msg) {
 }
 
 class JsLattice {
+    /// True only for the read-only audit constructor, which retains the ref
+    /// it creates; releaseStorage() releases exactly that reference.
+    bool owns_reference_ = false;
+
 public:
     // Constructor without sync
     JsLattice(const std::string& path, const val& schemas)
@@ -1005,6 +1009,14 @@ public:
             config.path = path;
             config.sched = g_emscripten_scheduler;
             ref_ = swift_lattice_ref::create_dynamic(config);
+            // _make() constructs with ref_count_ 0 and nothing here ever
+            // retained — so release() underflowed 0→-1, returned false, and
+            // the wrapper (with the ONLY shared_ptr) leaked: the exact
+            // refcount no-op the drain review flagged. Take the reference
+            // this handle actually owns; releaseStorage() drops it to zero
+            // and the connection really closes.
+            retainSwiftLatticeRef(ref_);
+            owns_reference_ = true;
         } catch (const std::exception& e) {
             throw_js_error(std::string("Failed to open database read-only: ") + e.what());
         } catch (...) {
@@ -1450,10 +1462,16 @@ public:
                     }
                 }
             }
-            auto entries = query_audit_log(db, true /*only_unsynced*/, std::nullopt);
+            // only_unsynced=true would ALSO filter isFromRemote=0 in core —
+            // silently dropping rows a drain or sibling relay applied
+            // (isFromRemote=1, unsynced, unmarked), i.e. making a
+            // second-generation rescue lossy. Take every row and apply the
+            // documented predicate ourselves: unsynced AND unmarked.
+            auto entries = query_audit_log(db, false /*all rows*/, std::nullopt);
             std::string json = "[";
             bool first = true;
             for (const auto& entry : entries) {
+                if (entry.is_synchronized) continue;
                 if (acked.count(entry.id)) continue;
                 if (!first) json += ",";
                 first = false;
@@ -1474,10 +1492,14 @@ public:
     // method is invalid after this. Cached/writable instances shared with a
     // live page merely drop one reference.
     void releaseStorage() {
-        if (ref_) {
-            releaseSwiftLatticeRef(ref_);
+        if (ref_ && owns_reference_) {
+            releaseSwiftLatticeRef(ref_);   // 1 → 0: deletes the wrapper, releases the only shared_ptr
             ref_ = nullptr;
+            owns_reference_ = false;
         }
+        // Cached/writable handles never retained (their survival across
+        // .delete() is load-bearing for same-path sharing — see
+        // src/sync-socket.ts), so releasing here would underflow; no-op.
     }
 
     // Checkpoint WAL to flush all changes into the main database file.
