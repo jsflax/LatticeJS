@@ -104,6 +104,15 @@ export interface LatticeWasm {
 
     // Audit log / sync methods
     getPendingAuditLog(): string;
+    /** The rows this store still OWES upstream (unsynced AND unmarked in
+     *  _lattice_sync_state) — downloads excluded, stranded local writes and
+     *  drained-in rows included. The drain predicate, in SQL. */
+    getUnshippedAuditLog(): string;
+    /** Release this handle's reference to the underlying store. For a
+     *  read-only audit open this CLOSES the sqlite connection; embind's
+     *  .delete() alone frees only the JS wrapper. Idempotent; no other
+     *  method is valid afterwards. */
+    releaseStorage(): void;
     applyRemoteChanges(json: string): string;
     markEntriesSynced(idsJson: string): void;
     observeAuditLog(callback: (json: string) => void): number;
