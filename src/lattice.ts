@@ -46,35 +46,26 @@ export interface AuditLogEntry {
 import wasmJsUrl from '../wasm/build/lattice.js?url';
 // @ts-ignore
 import wasmBinaryUrl from '../wasm/build/lattice.wasm?url';
-// @ts-ignore - Vite handles ?url imports
-import sharedWorkerUrl from './worker/shared-bootstrap?url';
-import * as Comlink from 'comlink';
-import type { SharedWorkerApi } from './worker/shared-impl';
 
-// Listen for debug messages from SharedWorker
-const debugChannel = new BroadcastChannel('lattice-debug');
-debugChannel.onmessage = (e) => {
-    if (e.data.type === 'error') {
-        console.error('[SharedWorker]', e.data.msg);
-    } else {
-        console.log('[SharedWorker]', e.data.msg);
-    }
-};
-
-// Create SharedWorker with URL
-function createSharedWorker(): SharedWorker {
-    const workerUrl = new URL(sharedWorkerUrl, import.meta.url);
-    console.log('[Lattice] SharedWorker URL:', workerUrl.href);
-
-    const worker = new SharedWorker(workerUrl, { type: 'module', name: 'lattice-shared' });
-
-    // Log any errors from the worker
-    worker.onerror = (e) => {
-        console.error('[Lattice] SharedWorker error:', e);
-    };
-
-    return worker;
-}
+// NO SharedWorker, NO BroadcastChannel — deliberately.
+//
+// openPersistent used to construct a SharedWorker unconditionally (and this
+// module used to open a `lattice-debug` BroadcastChannel at import time). Both
+// are optional platform APIs: they are absent in Safari < 16.4, in iOS
+// WKWebView, and in embedded webviews generally. `new SharedWorker(...)` on
+// such an engine throws ReferenceError, and it threw OUTSIDE any catch — so
+// `Lattice.open()` on a persistent path REJECTED there. Total failure of the
+// library on a whole class of engines, in exchange for a worker that did
+// nothing: its `init()` was a no-op, its `open()` built a BroadcastChannel
+// that was never listened on and never posted to, the page never joined that
+// channel, and in production bundles Vite inlined the bootstrap as a `data:`
+// URL, from which its relative `import('./shared-impl')` could never resolve.
+// There was no cross-tab relay to lose. Cross-tab convergence, where it
+// matters, is the SERVER's job: two tabs synced to the same websocket URL
+// converge through it.
+//
+// Do not reintroduce either global without feature-detecting it first.
+// Regression coverage: test/no-shared-worker.test.ts.
 
 export enum LogLevel {
     Off = 0,
@@ -101,8 +92,11 @@ const RESUME_MAX_WAIT_MS = 20000;
 /**
  * Main Lattice class for browser-based database operations.
  *
- * For in-memory databases (`:memory:`), runs WASM directly on main thread.
- * For persistent databases, uses a Web Worker for OPFS and syncs via BroadcastChannel.
+ * WASM runs on the main thread in both modes. `:memory:` databases live only
+ * for the page's lifetime; persistent databases are the same MEMFS database
+ * snapshotted to OPFS (periodically, on page-lifecycle edges, and at close)
+ * and restored from that snapshot on the next open. No worker is involved,
+ * so nothing here needs `SharedWorker` — see the note at the top of this file.
  */
 export class Lattice {
     private db: LatticeWasm;
@@ -122,10 +116,6 @@ export class Lattice {
     private schemas: SchemaEntry[];
     private modelMap: Map<string, ModelConstructor>;
 
-    // For persistent databases with worker sync
-    private sharedWorker: SharedWorker | null = null;
-    private workerApi: Comlink.Remote<SharedWorkerApi> | null = null;
-    private broadcastChannel: BroadcastChannel | null = null;
     private syncObserverId: (() => void) | null = null;
     private instanceId: string = safeRandomUUID();
 
@@ -335,7 +325,8 @@ export class Lattice {
             lattice = new Lattice(db, schemas, modelMap);
             lattice.syncSockets = sockets;
         } else {
-            // Persistent: use worker for OPFS + main thread for live objects
+            // Persistent: same main-thread wasm, snapshotted to and restored
+            // from OPFS. See openPersistent.
             lattice = await Lattice.openPersistent(path, schemas, modelMap, syncConfig);
         }
 
@@ -357,8 +348,12 @@ export class Lattice {
      * Architecture:
      * - Main thread opens named database (MEMFS) with sync — owns the data + WebSocket
      * - On startup, restore from OPFS snapshot for fast reload (delta sync only)
-     * - Periodically save snapshots to OPFS (async API)
-     * - SharedWorker is just a relay for cross-tab coordination
+     * - Periodically save snapshots to OPFS (async API), plus on page-lifecycle
+     *   edges and at close()
+     *
+     * Uses no worker of any kind: everything here runs on the main thread, so
+     * an engine without `SharedWorker` (Safari < 16.4, iOS WKWebView, embedded
+     * webviews) opens a persistent database exactly like any other.
      */
     private static async openPersistent(
         path: string,
@@ -459,27 +454,6 @@ export class Lattice {
         for (const [, model] of modelMap) {
             lattice.observeTable(model, () => { snapshotDirty = true; });
         }
-
-        // Connect SharedWorker as cross-tab relay
-        const channelName = `lattice-sync-${path.replace(/[^a-z0-9]/gi, '-')}`;
-        console.log('[Lattice] Connecting SharedWorker for cross-tab relay...');
-        const sharedWorker = createSharedWorker();
-        lattice.sharedWorker = sharedWorker;
-        sharedWorker.port.start();
-        lattice.workerApi = Comlink.wrap<SharedWorkerApi>(sharedWorker.port);
-
-        // Initialize SharedWorker in the background — don't block open()
-        (async () => {
-            try {
-                console.log('[Lattice] SharedWorker: initializing WASM...');
-                await lattice.workerApi!.init(wasmJsUrl, wasmBinaryUrl);
-                console.log('[Lattice] SharedWorker: WASM initialized, opening DB...');
-                await lattice.workerApi!.open(path, schemas, channelName);
-                console.log('[Lattice] SharedWorker relay ready');
-            } catch (err) {
-                console.error('[Lattice] SharedWorker init failed:', err);
-            }
-        })();
 
         // Save initial snapshot after first sync batch completes
         // (triggers after the first burst of observer callbacks settles)
@@ -1296,8 +1270,9 @@ export class Lattice {
     }
 
     /**
-     * Close the database and clean up resources.
-     * Unregisters observers and disconnects from SharedWorker.
+     * Close the database and clean up resources: severs the sync socket,
+     * unregisters observers, retires the snapshot timer and page-lifecycle
+     * listeners, takes the final OPFS snapshot, then deletes the wasm handle.
      */
     async close(): Promise<void> {
         console.log('[Lattice.close] Closing database...');
@@ -1332,19 +1307,6 @@ export class Lattice {
         if (this.syncObserverId) {
             this.syncObserverId();
             this.syncObserverId = null;
-        }
-
-        // Close broadcast channel
-        if (this.broadcastChannel) {
-            this.broadcastChannel.close();
-            this.broadcastChannel = null;
-        }
-
-        // Disconnect from SharedWorker (worker stays alive for other tabs)
-        if (this.sharedWorker) {
-            this.sharedWorker.port.close();
-            this.sharedWorker = null;
-            this.workerApi = null;
         }
 
         // Retire openPersistent's snapshot timer + page-lifecycle listeners

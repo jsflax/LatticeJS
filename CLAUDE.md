@@ -1,13 +1,12 @@
 # LatticeJS
 
-A browser-first ORM for JavaScript/TypeScript with WebAssembly, providing SQLite-backed persistence with cross-tab sync and optional server sync.
+A browser-first ORM for JavaScript/TypeScript with WebAssembly, providing SQLite-backed persistence and optional server sync.
 
 ## Project Overview
 
 LatticeJS is a TypeScript ORM that uses a C++ core compiled to WebAssembly. It provides:
 - **Decorator-based models** (`@model`, `link()`, `list()`, `nullable()`)
 - **C++ backing storage** via Emscripten-compiled WASM
-- **Cross-tab sync** using SharedWorker + BroadcastChannel
 - **OPFS persistence** (Origin Private File System) when available
 - **Server sync** via WebSocket for multi-device synchronization
 - **Live queries** via `Results<T>` with async iteration
@@ -23,11 +22,19 @@ src/
 ├── storage.ts        # WASM module reference management
 ├── results.ts        # Live query Results<T> class
 ├── list.ts           # List<T> for to-many relationships
-└── worker/
-    ├── index.ts           # Standard Web Worker entry
-    ├── shared-bootstrap.ts # SharedWorker bootstrap (polyfills)
-    └── shared-impl.ts      # SharedWorker implementation
+├── sync-socket.ts    # Sync WebSocket tracking / teardown
+├── pending-drain.ts  # Orphaned-write rescue
+└── vite-plugin.ts    # keepNames plugin (minified @model names)
 ```
+
+There is no `worker/` directory and no worker of any kind. The SharedWorker
+relay that used to live there was inert (no-op `init`, a BroadcastChannel
+nobody listened on, a bootstrap Vite inlined as a `data:` URL whose relative
+`import()` never resolved) and its unguarded `new SharedWorker(...)` made
+`Lattice.open()` reject outright wherever `SharedWorker` is undefined
+(Safari < 16.4, iOS WKWebView, embedded webviews). Do not reintroduce a
+worker path without a consumer that actually needs one — and if one is ever
+needed, feature-detect it and keep it optional.
 
 ### Key Patterns
 
@@ -40,9 +47,11 @@ src/
 
 3. **Hydration**: `hydrateInstance()` creates model instances from C++ objects without running constructors (uses `Object.create()`).
 
-4. **Persistence Architecture**:
-   - In-memory (`:memory:`): WASM runs on main thread
-   - Persistent: Main thread has in-memory WASM + SharedWorker has OPFS-backed WASM, synced via BroadcastChannel
+4. **Persistence Architecture**: WASM runs on the main thread in both modes.
+   - In-memory (`:memory:`): lives for the page's lifetime only
+   - Persistent: the same MEMFS database, snapshotted to OPFS every 15s when
+     dirty, on `visibilitychange`/`pagehide`, and at `close()`; restored from
+     that snapshot on the next open, so sync only has to fetch the delta
 
 ## Build Commands
 
@@ -170,8 +179,8 @@ const unsubscribe = lattice.observe((entries) => {
 
 ## Dependencies
 
-**Runtime:**
-- `comlink` - Web Worker RPC
+**Runtime:** none. (`comlink` was the worker RPC layer and went with the
+worker.)
 
 **Development:**
 - `typescript` - Type checking and compilation
@@ -185,7 +194,7 @@ const unsubscribe = lattice.observe((entries) => {
 
 2. **COOP/COEP Headers**: Required for SharedArrayBuffer (WASM threading). Vite config sets these.
 
-3. **SharedWorker Limitations**: OPFS with WASMFS has compatibility issues in SharedWorker context. Falls back to in-memory if unavailable.
+3. **No SharedWorker, no BroadcastChannel**: neither is touched, at import time or after. Both are absent on real target engines (Safari < 16.4, iOS WKWebView), and reaching for one unguarded used to make `Lattice.open()` reject there. Persistence uses the async OPFS API from the main thread, which those engines do have.
 
 4. **BigInt Handling**: C++ returns BigInt for integers; code converts to Number for convenience.
 
@@ -197,4 +206,4 @@ const unsubscribe = lattice.observe((entries) => {
 
 - **WASM Output**: `wasm/build/lattice.js`, `wasm/build/lattice.wasm`
 - **TS Output**: `dist/`
-- **Example App**: `examples/notes.html` (notes app with cross-tab + optional server sync)
+- **Example App**: `examples/notes.html` (notes app with optional server sync)

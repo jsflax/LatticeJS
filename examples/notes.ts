@@ -158,7 +158,7 @@ async function initLattice(syncConfig?: { websocketUrl: string; authToken: strin
 
     statusEl.textContent = syncConfig
         ? 'Connected with server sync enabled'
-        : 'Connected (cross-tab sync only)';
+        : 'Connected (local only \u2014 no server sync)';
     statusEl.className = 'status ready';
 
     // Enable input
@@ -313,7 +313,7 @@ async function logout() {
 
     // Reconnect without sync
     await initLattice();
-    log('Logged out, using cross-tab sync only', 'server');
+    log('Logged out \u2014 this store is now local to this tab', 'server');
 }
 
 function showAuthError(message: string) {
@@ -347,7 +347,7 @@ async function init() {
             await initLattice();
         }
 
-        log('Ready! Open this page in another tab to test cross-tab sync.', 'sync');
+        log('Ready! Sign in to sync with the server (and with other tabs).', 'sync');
 
     } catch (err: any) {
         console.error('Init failed:', err);

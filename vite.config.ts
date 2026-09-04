@@ -15,16 +15,5 @@ export default defineConfig({
             name: 'LatticeJS',
             fileName: 'lattice',
         },
-        rollupOptions: {
-            // Don't bundle comlink - it should be a peer dependency
-            external: ['comlink'],
-        },
-    },
-    // Make sure worker is bundled correctly
-    worker: {
-        format: 'es',
-    },
-    optimizeDeps: {
-        exclude: ['comlink'],
     },
 });

@@ -1,6 +1,6 @@
 # LatticeJS
 
-A browser-first ORM for JavaScript/TypeScript powered by WebAssembly. SQLite-backed persistence with cross-tab sync, optional server sync, full-text search, and vector search -- all running client-side.
+A browser-first ORM for JavaScript/TypeScript powered by WebAssembly. SQLite-backed persistence with optional server sync, full-text search, and vector search -- all running client-side.
 
 ```typescript
 import { Lattice, model, link, list } from '@jsflax/lattice';
@@ -28,8 +28,7 @@ const todos = await lattice.objects(Todo)
 
 - **Decorator-based models** -- define schemas with plain class properties
 - **C++ core via WebAssembly** -- SQLite runs in-browser, no server required
-- **Cross-tab sync** -- SharedWorker + BroadcastChannel keeps tabs in sync
-- **Server sync** -- optional WebSocket sync for multi-device
+- **Server sync** -- optional WebSocket sync for multi-device (and multi-tab)
 - **OPFS persistence** -- survives page reloads via Origin Private File System
 - **Live queries** -- `Results<T>` with async iteration and chainable filters
 - **Full-text search** -- FTS5-backed search on string columns
@@ -464,9 +463,21 @@ skipped before any write, the replayed SQL upserts on `globalId` behind a value
 guard, and the server drops changes it has already seen -- so re-draining the
 same store, or draining it into two different stores, delivers once.
 
-### Cross-Tab Sync
+### Tabs
 
-Persistent databases automatically sync across browser tabs using a SharedWorker. No configuration needed -- just open the same database path in multiple tabs.
+There is no cross-tab relay, and no worker of any kind -- everything runs on the
+main thread. Two tabs that open the same path each hold their **own** database
+(the same OPFS snapshot, restored twice) and do not see each other's local
+writes directly.
+
+Where tabs need to converge, sync does it: tabs pointed at the same
+`websocketUrl` converge through the server, on the same path that carries other
+devices. Without sync, treat a store as tab-local.
+
+(Versions before this one advertised a SharedWorker + BroadcastChannel relay.
+It never relayed anything -- and constructing it broke `Lattice.open()`
+outright on engines with no `SharedWorker`: Safari &lt; 16.4, iOS WKWebView,
+embedded webviews. It was removed rather than repaired.)
 
 ## Framework Integration
 
@@ -630,7 +641,7 @@ onMounted(async () => {
     lattice.value = await Lattice.open('myapp', [Todo]);
     await reload();
 
-    // Re-query when data changes (local edits, cross-tab sync, server sync)
+    // Re-query when data changes (local edits, server sync)
     unsubscribe = lattice.value.observeTable(Todo, () => reload());
 });
 
