@@ -3,6 +3,7 @@ import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, Lattice
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
+import { safeRandomUUID } from './uuid';
 
 /**
  * Represents an audit log entry from the database.
@@ -94,7 +95,7 @@ export class Lattice {
     private workerApi: Comlink.Remote<SharedWorkerApi> | null = null;
     private broadcastChannel: BroadcastChannel | null = null;
     private syncObserverId: (() => void) | null = null;
-    private instanceId: string = crypto.randomUUID();
+    private instanceId: string = safeRandomUUID();
 
     private constructor(
         db: LatticeWasm,

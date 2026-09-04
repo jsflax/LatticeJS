@@ -1,12 +1,13 @@
 // Web Worker entry point - runs WASM in background thread
 import * as Comlink from 'comlink';
 import type { SchemaEntry } from '../types';
+import { safeRandomUUID } from '../uuid';
 
 let wasmModule: any = null;
 let latticeInstance: any = null;
 let broadcastChannel: BroadcastChannel | null = null;
 let observerId: number | null = null;
-let workerInstanceId: string = crypto.randomUUID();
+let workerInstanceId: string = safeRandomUUID();
 
 /**
  * Worker API exposed via Comlink
