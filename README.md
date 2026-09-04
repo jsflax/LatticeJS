@@ -423,6 +423,47 @@ lattice.updateSyncFilter([
 lattice.clearSyncFilter();
 ```
 
+### Rescuing Orphaned Writes
+
+Browser builds never redial: when the sync socket dies, the store keeps
+accepting writes and journalling them for an uploader whose transport is gone.
+Detecting the death is app-side and never instantaneous, so a write can land in
+a store that can no longer ship it. Apps recover by reopening under a **fresh
+store name** -- which starts empty, catches up from the server, and therefore
+never contains those stranded writes. `close()` cannot help either: the socket
+is already dead.
+
+Point the new store at the one it replaces and those writes are re-offered on
+the live socket:
+
+```typescript
+const lattice = await Lattice.open(freshName, [Todo], {
+    sync: { websocketUrl, authToken },
+    resumePendingFrom: previousName,          // the store this one replaces
+    onResumePending: (r) => console.log(`rescued ${r.applied.length} write(s)`),
+});
+```
+
+The drain runs once the new store's socket is open **and** its catch-up has
+gone quiet, so rescued rows land on top of the server's authoritative replay
+rather than under it. It never blocks `open()`.
+
+Or drive it by hand -- inspect first, drain when you choose:
+
+```typescript
+// Storage-only read of an abandoned store: no socket, no writes.
+const pending = await Lattice.pendingUploads(previousName, [Todo]);
+console.log(`${pending.length} write(s) never reached the server`, pending);
+
+// Re-offer them through a live, connected instance.
+const report = await lattice.drainPendingFrom(previousName);
+```
+
+Draining is **idempotent** at three levels -- rows the target already has are
+skipped before any write, the replayed SQL upserts on `globalId` behind a value
+guard, and the server drops changes it has already seen -- so re-draining the
+same store, or draining it into two different stores, delivers once.
+
 ### Cross-Tab Sync
 
 Persistent databases automatically sync across browser tabs using a SharedWorker. No configuration needed -- just open the same database path in multiple tabs.
@@ -651,6 +692,8 @@ async function removeTodo(todo: Todo) {
 |--------|-------------|
 | `Lattice.open(path, models, options?)` | Open a database. Use `':memory:'` or a name for OPFS persistence. |
 | `Lattice.setLogLevel(level)` | Set C++ log verbosity (`Off`, `Error`, `Warn`, `Info`, `Debug`). |
+| `Lattice.pendingUploads(path, models, options?)` | Storage-only read of a store's un-ACKed writes, as plain JSON. Opens no socket. |
+| `drainPendingFrom(previousPath, options?)` | Re-offer an abandoned store's un-ACKed writes through this live instance. Idempotent. |
 | `add(instance)` | Insert a model instance. Returns it with `id` and `globalId` set. |
 | `addAll(instances)` | Bulk insert in a single transaction. |
 | `find(Model, id)` | Find by primary key. |

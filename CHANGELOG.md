@@ -1,3 +1,22 @@
+## Unreleased — orphaned-write drain fix round
+
+- **Read-only audit open** (arity-3 `Lattice` constructor → `create_dynamic`): reading an
+  abandoned store's pending set no longer runs `ensure_tables`/`heal_collapsed_sync_state`
+  (the write-capable constructor mutated the store it audited), never migrates on schema
+  drift (schema is reconstructed from the file), bypasses the instance key-cache, and —
+  via the new `releaseStorage()` binding — actually closes the sqlite connection
+  (`.delete()` alone freed only the JS wrapper: one leaked connection per abandoned store).
+- **`getUnshippedAuditLog()`**: the drain predicate in SQL — unsynced AND unmarked in
+  `_lattice_sync_state`. Rows the synchronizer *downloaded* carry a per-sync_id ack mark
+  and are now excluded; the previous JSON-side filter over `getPendingAuditLog()` was a
+  superset that re-offered the entire downloaded room on every rescue.
+- **Missing ≠ empty**: `pendingUploads()` returns `null` (and `DrainReport` gains
+  `sourceMissing`) when no store exists at the path — a wrong name no longer reads as
+  "nothing was stranded".
+- **Drain ordering floor**: `waitForCatchUpQuiet` gains `minWaitMs`
+  (`resumePendingFrom` uses 3s) — socket-open is not catch-up-begun, and a quiet window
+  elapsing at `received === 0` before the server's replay starts must not fire the drain.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -6,6 +25,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+- **Orphaned-write drain.** Writes accepted between a sync socket's death and
+  the app noticing were stranded forever: browser builds never redial, `close()`
+  cannot drain a dead socket, and the standard recovery — reopening under a
+  fresh store name — starts from a store whose catch-up cannot contain writes
+  the server never saw. Three new entry points make that set readable and
+  re-deliverable, all JS-side over existing bindings:
+  `Lattice.pendingUploads(path, models)` (storage-only read of a store's
+  un-ACKed rows, as plain JSON — opens no socket),
+  `instance.drainPendingFrom(previousPath)` (re-offers them through a live
+  synced instance so they upload), and the `resumePendingFrom` option on
+  `Lattice.open()`, which runs that drain automatically once the new store's
+  socket is open and its catch-up has gone quiet. Idempotent: re-draining an
+  already-delivered store is a no-op. See `src/pending-drain.ts`.
 
 ## [1.0.0] - 2026-07-25
 

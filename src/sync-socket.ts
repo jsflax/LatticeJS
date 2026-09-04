@@ -85,6 +85,8 @@ export interface TrackedSyncSocket {
     readonly readyState: number;
     close(code?: number, reason?: string): void;
     removeEventListener(type: string, listener: any, options?: any): void;
+    /** Only needed by `whenSyncSocketOpen`; absent on a minimal stub. */
+    addEventListener?(type: string, listener: any, options?: any): void;
     /** Raw C++ `emscripten_websocket_client*`, stamped by the wasm transport. */
     _lattice_client?: number;
 }
@@ -103,6 +105,7 @@ interface SocketScope {
 }
 
 /** WebSocket.readyState values — spelled out so this module needs no DOM lib. */
+const OPEN = 1;
 const CLOSING = 2;
 const CLOSED = 3;
 
@@ -299,6 +302,63 @@ export function releaseSyncSockets(
     }
     prune();
     return closed;
+}
+
+/**
+ * Resolve once one of `sockets` is OPEN, or `false` if none opens within
+ * `timeoutMs` (or there is nothing to wait for).
+ *
+ * Used by `resumePendingFrom`: rescued writes may only be offered to a store
+ * whose transport can actually ship them, and "the socket is open" is the one
+ * connection signal that is per-INSTANCE. `Lattice.onSyncState` cannot serve
+ * here — `Module._dispatchSyncState` is module-global and carries no socket
+ * identity, so with two synced lattices open a listener hears the OTHER one's
+ * handshake. These sockets are the ones this instance captured at construction.
+ *
+ * Listener-based, with the already-open case handled synchronously and a
+ * fallback poll for a stub socket without `addEventListener`. No SharedWorker,
+ * no BroadcastChannel — Safari-safe.
+ */
+export function whenSyncSocketOpen(
+    sockets: readonly TrackedSyncSocket[],
+    timeoutMs: number,
+    sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+    if (sockets.length === 0) return Promise.resolve(false);
+    if (sockets.some((s) => s.readyState === OPEN)) return Promise.resolve(true);
+
+    return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const cleanups: Array<() => void> = [];
+        const finish = (opened: boolean) => {
+            if (settled) return;
+            settled = true;
+            for (const undo of cleanups) {
+                try { undo(); } catch { /* detaching a dead socket is not an error */ }
+            }
+            resolve(opened);
+        };
+
+        for (const sock of sockets) {
+            if (typeof sock.addEventListener !== 'function') continue;
+            const onOpen = () => finish(true);
+            try {
+                sock.addEventListener('open', onOpen);
+                cleanups.push(() => sock.removeEventListener('open', onOpen));
+            } catch { /* fall back to the poll below */ }
+        }
+
+        // The poll covers both the stub case and a socket that opened between
+        // the readyState check above and the listener attaching.
+        const deadline = Date.now() + timeoutMs;
+        void (async () => {
+            while (!settled) {
+                if (sockets.some((s) => s.readyState === OPEN)) return finish(true);
+                if (Date.now() >= deadline) return finish(false);
+                await sleep(50);
+            }
+        })();
+    });
 }
 
 /**
