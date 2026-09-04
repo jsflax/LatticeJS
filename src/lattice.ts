@@ -750,7 +750,23 @@ export class Lattice {
      * Note: This creates a NEW DynamicObject and copies data into it.
      */
     private dataToInstance<T>(modelClass: ModelConstructor<T>, data: Record<string, unknown>): T {
-        // This needs to run the constructor to create a DynamicObject
+        // MANAGED hydration first: a query row with an id gets the REAL
+        // C++-backed object (same path as find()), so property setters write
+        // through to the row (audit triggers → sync history) and LinkLists
+        // have live backing. The copy-into-unmanaged fallback below made
+        // every query result a DETACHED facsimile — edits and list pushes
+        // were silently local-only, and synced link lists read empty
+        // (found by JoyJet's browser sync.spec).
+        if (data.id !== undefined) {
+            const numId = typeof data.id === 'bigint' ? Number(data.id) : data.id as number;
+            try {
+                const managed = this.db.findObject(getTableName(modelClass), numId);
+                if (managed && managed.isValid()) {
+                    return hydrateInstance(modelClass, managed, this);
+                }
+            } catch { /* fall through to detached copy */ }
+        }
+        // Detached fallback (no id — e.g. raw data rows).
         const instance = new modelClass() as any;
         instance[LATTICE_REF] = this;
 
