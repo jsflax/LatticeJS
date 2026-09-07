@@ -53,5 +53,8 @@
     "sync"
   ],
   "author": "Jason",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "comlink": "^4.4.2"
+  }
 }
