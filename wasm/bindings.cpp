@@ -979,6 +979,30 @@ void throw_js_error(const std::string& msg) {
 }
 
 class JsLattice {
+    // Core's copied scheduler callbacks share this context. It owns the JS
+    // callback exactly once and only weakly references the store, avoiding a
+    // Core observer -> context -> Core cycle. WASM dispatch is single-threaded.
+    struct AuditLogContext {
+        std::weak_ptr<lattice::swift_lattice> owner;
+        val callback;
+        bool active = true;
+    };
+
+    std::unordered_map<uint64_t, std::shared_ptr<AuditLogContext>> audit_observers_;
+
+    void clear_audit_observers() noexcept {
+        for (const auto& [id, context] : audit_observers_) {
+            context->active = false;
+            try {
+                if (auto owner = context->owner.lock())
+                    owner->remove_table_observer("AuditLog", id);
+            } catch (...) {
+                // A copied/retained callback remains inert after cancellation.
+            }
+        }
+        audit_observers_.clear();
+    }
+
     /// True only for the read-only audit constructor, which retains the ref
     /// it creates; releaseStorage() releases exactly that reference.
     bool owns_reference_ = false;
@@ -1115,6 +1139,7 @@ public:
     }
 
     ~JsLattice() {
+        clear_audit_observers();
         if (ref_) {
             releaseSwiftLatticeRef(ref_);
         }
@@ -1492,6 +1517,7 @@ public:
     // method is invalid after this. Cached/writable instances shared with a
     // live page merely drop one reference.
     void releaseStorage() {
+        clear_audit_observers();
         if (ref_ && owns_reference_) {
             releaseSwiftLatticeRef(ref_);   // 1 → 0: deletes the wrapper, releases the only shared_ptr
             ref_ = nullptr;
@@ -1725,42 +1751,74 @@ public:
     // Returns observer ID (for removal)
     uint64_t observeAuditLog(val callback) {
         try {
-            struct AuditLogContext {
-                val* callback;
-            };
-            auto* ctx = new AuditLogContext{new val(callback)};
-
-            auto observer_id = ref_->get()->add_table_observer("AuditLog", ctx,
-                // Batched observer contract: one call per WAL flush with
-                // parallel arrays (count rows of op/rowId/globalRowId).
-                [](void* context, const char* const* operations, const int64_t* row_ids,
-                   const char* const* global_row_ids, size_t count) {
-                    auto* ctx = static_cast<AuditLogContext*>(context);
+            auto owner = swift_lattice_ref::shared_for_lattice(ref_->get());
+            if (!owner || owner->is_closed())
+                throw std::runtime_error("AuditLog observation requires an open store");
+            auto context = std::make_shared<AuditLogContext>(
+                AuditLogContext{owner, std::move(callback), true});
+            // Use the native batch directly. Registration owns its shared
+            // context even if the map insertion below fails.
+            const auto observer_id = static_cast<lattice_db&>(*owner).add_table_observer(
+                "AuditLog", [context](const std::vector<lattice_db::change_event>& batch) {
+                    if (!context->active) return;
+                    auto owner = context->owner.lock();
+                    if (!owner || owner->is_closed()) return;
                     std::string json = "[";
                     bool any = false;
-                    for (size_t i = 0; i < count; ++i) {
-                        if (std::string(operations[i]) != "INSERT") continue;
-                        std::string gid(global_row_ids[i] ? global_row_ids[i] : "");
+                    for (const auto& event : batch) {
+                        const auto& [table, operation, row_id, global_id, fields] = event;
+                        if (operation != "INSERT") continue;
+                        // The notification identifies an AuditLog row, not the
+                        // model operation. Match both identities: a deleted or
+                        // reused local row ID must never produce another event.
+                        auto rows = owner->db().query(
+                            "SELECT id, globalId, tableName, operation, rowId, globalRowId, "
+                            "changedFields, changedFieldsNames, CAST(timestamp AS TEXT) AS timestamp, isFromRemote, "
+                            "isSynchronized FROM AuditLog WHERE id = ? AND globalId = ?",
+                            {row_id, global_id});
+                        if (rows.size() != 1)
+                            throw std::runtime_error("Observed AuditLog row is no longer available");
+                        const auto& row = rows.front();
+                        auto text = [&row](const char* key) -> const std::string& {
+                            return std::get<std::string>(row.at(key));
+                        };
+                        auto integer = [&row](const char* key) -> int64_t {
+                            return std::get<int64_t>(row.at(key));
+                        };
+                        audit_log_entry entry;
+                        entry.id = integer("id");
+                        entry.global_id = text("globalId");
+                        entry.table_name = text("tableName");
+                        entry.operation = text("operation");
+                        entry.row_id = integer("rowId");
+                        entry.global_row_id = text("globalRowId");
+                        entry.changed_fields = audit_log_entry::parse_changed_fields(text("changedFields"));
+                        entry.changed_fields_names = audit_log_entry::parse_changed_fields_names(text("changedFieldsNames"));
+                        entry.timestamp = text("timestamp");
+                        entry.is_from_remote = integer("isFromRemote") != 0;
+                        entry.is_synchronized = integer("isSynchronized") != 0;
                         if (any) json += ",";
-                        json += "{\"globalId\":\"" + gid + "\",\"operation\":\"" +
-                                std::string(operations[i]) + "\",\"rowId\":" +
-                                std::to_string(row_ids[i]) + "}";
+                        json += entry.to_json();
                         any = true;
                     }
                     json += "]";
-                    if (any) (*(ctx->callback))(json);
-                },
-                [](void* context) {
-                    auto* ctx = static_cast<AuditLogContext*>(context);
-                    delete ctx->callback;
-                    delete ctx;
+                    // Missing/type-invalid SQL columns throw before publication;
+                    // the existing Emscripten scheduler reports the error. This
+                    // live API does not promise replay after history pruning.
+                    if (any && context->active) context->callback(json);
                 });
-
-            observer_callbacks_[observer_id] = ctx->callback;
+            try {
+                audit_observers_.emplace(observer_id, context);
+            } catch (...) {
+                context->active = false;
+                owner->remove_table_observer("AuditLog", observer_id);
+                throw;
+            }
             return observer_id;
         } catch (const std::exception& e) {
-            return 0;
+            throw_js_error(std::string("observeAuditLog failed: ") + e.what());
         }
+        return 0;
     }
 
     // Observe a specific model table for changes.
@@ -1792,18 +1850,19 @@ public:
 
     // Remove an audit log observer
     void removeAuditLogObserver(uint64_t observer_id) {
+        auto it = audit_observers_.find(observer_id);
+        if (it == audit_observers_.end()) return;
+        auto context = std::move(it->second);
+        audit_observers_.erase(it);
+        // Suppress already-copied scheduler callbacks, including self-removal.
+        context->active = false;
         try {
-            ref_->get()->remove_table_observer("AuditLog", observer_id);
-
-            // Clean up stored callback
-            auto it = observer_callbacks_.find(observer_id);
-            if (it != observer_callbacks_.end()) {
-                delete it->second;
-                observer_callbacks_.erase(it);
-            }
+            if (auto owner = context->owner.lock())
+                owner->remove_table_observer("AuditLog", observer_id);
         } catch (const std::exception& e) {
             printf("[removeAuditLogObserver] Error: %s\n", e.what());
         }
+        // No second delete: the shared context is the sole val owner.
     }
 
     // Remove a table observer by ID and table name
