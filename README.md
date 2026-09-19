@@ -40,7 +40,7 @@ const todos = await lattice.objects(Todo)
 ## Installation
 
 ```bash
-npm install --save-exact https://github.com/jsflax/LatticeJS/releases/download/v1.1.0/jsflax-lattice-1.1.0.tgz reflect-metadata
+npm install --save-exact https://github.com/jsflax/LatticeJS/releases/download/v1.1.1/jsflax-lattice-1.1.1.tgz reflect-metadata
 ```
 
 Install the built release archive: it includes the compiled JavaScript,
@@ -73,6 +73,11 @@ This build runs WASM on the main thread and does not require `SharedArrayBuffer`
 or cross-origin isolation headers. The plugin preserves class names; it does not
 configure response headers. Configure any headers required by other parts of your
 application in your own server or deployment.
+
+The generated WASM loader does not require JavaScript `'unsafe-eval'`. If your
+application enforces a Content Security Policy, allow WebAssembly compilation
+(for example, `'wasm-unsafe-eval'` in `script-src`) and the resources your
+application loads. Configure the policy in your server or deployment.
 
 ## Defining Models
 

@@ -1,3 +1,11 @@
+## [1.1.1] - 2026-09-19
+
+- Build the generated WASM loader with `DYNAMIC_EXECUTION=0` so it does not
+  require JavaScript `'unsafe-eval'` under Content Security Policy. WebAssembly
+  compilation still needs to be permitted by the application's policy.
+- Ship the matching JavaScript/WASM asset pair. TypeScript APIs, the Core
+  submodule, database schemas, and the sync wire format are unchanged.
+
 ## [1.1.0] - 2026-09-19
 
 - Add instance-scoped sync lifecycle subscriptions, immutable instance and
