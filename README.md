@@ -40,8 +40,14 @@ const todos = await lattice.objects(Todo)
 ## Installation
 
 ```bash
-npm install @jsflax/lattice reflect-metadata
+npm install --save-exact https://github.com/jsflax/LatticeJS/releases/download/v1.1.0/jsflax-lattice-1.1.0.tgz reflect-metadata
 ```
+
+Install the built release archive: it includes the compiled JavaScript,
+TypeScript declarations, and matching WASM assets. Commit the resulting lockfile.
+GitHub's automatic source archives and Git dependencies do not contain these
+build outputs. This release is distributed through GitHub rather than the npm
+registry.
 
 Add `reflect-metadata` to your entry point:
 
@@ -63,12 +69,10 @@ export default defineConfig({
 });
 ```
 
-WASM threading requires these headers (the Vite dev server sets them automatically):
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
+This build runs WASM on the main thread and does not require `SharedArrayBuffer`
+or cross-origin isolation headers. The plugin preserves class names; it does not
+configure response headers. Configure any headers required by other parts of your
+application in your own server or deployment.
 
 ## Defining Models
 
