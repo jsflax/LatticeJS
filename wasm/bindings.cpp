@@ -1,7 +1,9 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 #include <emscripten.h>
+#include <emscripten/eventloop.h>
 #include <sqlite3.h>
+#include <map>
 #include <unordered_set>
 
 // WASMFS is only available when WASMFS=1 is set
@@ -41,22 +43,49 @@ EM_JS(void, debugLogToChannel, (const char* msg), {
 // the Emscripten event loop rather than calling them directly, to ensure
 // proper integration with JavaScript's single-threaded execution model.
 
-class emscripten_scheduler : public scheduler {
+class emscripten_scheduler : public scheduler, public std::enable_shared_from_this<emscripten_scheduler> {
+    struct pending_work {
+        emscripten_scheduler* owner;
+        long timer = 0;
+        std::function<void()> fn;
+    };
+    std::map<long, std::unique_ptr<pending_work>> pending_;
+    bool stopped_ = false;
+    unsigned dispatch_depth_ = 0;
+    val socket_ = val::null();
+    uint64_t next_socket_listener_ = 1;
+    uint64_t socket_generation_ = 0;
+    std::map<uint64_t, std::function<void(val)>> socket_listeners_;
+    void queue_socket_listener(uint64_t id) {
+        const auto generation = socket_generation_;
+        invoke([this, id, generation] {
+            const auto found = socket_listeners_.find(id);
+            if (found == socket_listeners_.end() || generation != socket_generation_) return;
+            auto callback = found->second;
+            callback(socket_);
+        });
+    }
 public:
+    inline static size_t alive_count = 0;
+    inline static size_t pending_count = 0;
+    emscripten_scheduler() { ++alive_count; }
+    ~emscripten_scheduler() override { shutdown(); --alive_count; }
+
     void invoke(std::function<void()>&& fn) override {
-        if (!fn) {
-            return;
-        }
-
-        // Allocate the callback on the heap so it survives until async dispatch
-        auto* callback = new std::function<void()>(std::move(fn));
-
-        // Use emscripten_async_call to dispatch to the event loop
-        // The delay of 0 means "as soon as possible" in the next event loop tick
-        emscripten_async_call([](void* arg) {
-            auto* cb = static_cast<std::function<void()>*>(arg);
+        if (!fn || stopped_) return;
+        auto work = std::make_unique<pending_work>();
+        work->owner = this;
+        work->fn = std::move(fn);
+        work->timer = emscripten_set_timeout([](void* arg) {
+            auto* work = static_cast<pending_work*>(arg);
+            auto owner = work->owner->shared_from_this();
+            auto callback = std::move(work->fn);
+            // Erase before invoking: callbacks may retire the scheduler.
+            work->owner->pending_.erase(work->timer);
+            --pending_count;
+            ++owner->dispatch_depth_;
             try {
-                if (*cb) (*cb)();
+                callback();
             } catch (const std::exception& e) {
                 char buf[512];
                 snprintf(buf, sizeof(buf), "SCHEDULER EXCEPTION: %s", e.what());
@@ -64,9 +93,40 @@ public:
             } catch (...) {
                 debugLogToChannel("SCHEDULER EXCEPTION: unknown");
             }
-            delete cb;
-        }, callback, 0);
+            --owner->dispatch_depth_;
+        }, 0, work.get());
+        pending_.emplace(work->timer, std::move(work));
+        ++pending_count;
     }
+
+    void shutdown() override {
+        if (stopped_) return;
+        stopped_ = true;
+        auto pending = std::move(pending_);
+        pending_count -= pending.size();
+        for (const auto& [timer, work] : pending) emscripten_clear_timeout(timer);
+        // Destroy captured callbacks while their native owner is still alive.
+        pending.clear();
+        socket_listeners_.clear();
+        socket_ = val::null();
+    }
+
+    void set_socket(val socket) {
+        socket_ = std::move(socket);
+        ++socket_generation_;
+        // Leave native transport construction before invoking user code. The
+        // owner queue also protects reentrant deletion and retired listeners.
+        for (const auto& [id, listener] : socket_listeners_) queue_socket_listener(id);
+    }
+    uint64_t watch_socket(std::function<void(val)> listener) {
+        const auto id = next_socket_listener_++;
+        socket_listeners_.emplace(id, listener);
+        queue_socket_listener(id);
+        return id;
+    }
+    void unwatch_socket(uint64_t id) { socket_listeners_.erase(id); }
+    val socket() const { return socket_; }
+    bool executing() const { return dispatch_depth_ != 0; }
 
     [[nodiscard]] bool is_on_thread() const noexcept override {
         return true;  // WASM is single-threaded
@@ -77,12 +137,9 @@ public:
     }
 
     [[nodiscard]] bool can_invoke() const noexcept override {
-        return true;
+        return !stopped_;
     }
 };
-
-// Global scheduler instance for WASM
-static std::shared_ptr<emscripten_scheduler> g_emscripten_scheduler = std::make_shared<emscripten_scheduler>();
 
 // ============================================================================
 // Browser WebSocket Client - wraps JS WebSocket for C++ sync
@@ -92,6 +149,9 @@ static std::shared_ptr<emscripten_scheduler> g_emscripten_scheduler = std::make_
 
 class emscripten_websocket_client : public sync_transport {
 private:
+    std::shared_ptr<emscripten_scheduler> scheduler_;
+    // Events already transferred into C++ must not outlive this connection.
+    std::shared_ptr<bool> connection_alive_ = std::make_shared<bool>(true);
     val ws_ = val::null();
     transport_state state_ = transport_state::closed;
 
@@ -101,7 +161,8 @@ private:
     on_close_handler on_close_;
 
 public:
-    emscripten_websocket_client() = default;
+    explicit emscripten_websocket_client(std::shared_ptr<emscripten_scheduler> sched)
+        : scheduler_(std::move(sched)) {}
     ~emscripten_websocket_client() override {
         disconnect();
     }
@@ -113,6 +174,7 @@ public:
         }
 
         state_ = transport_state::connecting;
+        connection_alive_ = std::make_shared<bool>(true);
 
         // Browser WebSocket doesn't support custom headers
         // Pass Authorization token as query parameter instead
@@ -138,6 +200,7 @@ public:
         // Create WebSocket
         val WebSocket = val::global("WebSocket");
         ws_ = WebSocket.new_(final_url);
+        scheduler_->set_socket(ws_);
 
         // Set binary type to arraybuffer
         ws_.set("binaryType", val("arraybuffer"));
@@ -155,6 +218,7 @@ public:
     }
 
     void disconnect() override {
+        *connection_alive_ = false;
         if (!ws_.isNull()) {
             // Detach BEFORE close(), in this order, or teardown dispatches
             // into freed memory: the browser delivers ws events as later
@@ -212,8 +276,8 @@ public:
     void handle_open() {
         state_ = transport_state::open;
         if (on_open_) {
-            g_emscripten_scheduler->invoke([this]() {
-                on_open_();
+            scheduler_->invoke([this, alive = connection_alive_]() {
+                if (*alive && on_open_) on_open_();
             });
         }
     }
@@ -254,14 +318,18 @@ public:
         }
 
         if (on_message_) {
-            g_emscripten_scheduler->invoke([this, msg = std::move(msg)]() { on_message_(msg); });
+            scheduler_->invoke([this, alive = connection_alive_, msg = std::move(msg)]() {
+                if (*alive && on_message_) on_message_(msg);
+            });
         }
     }
 
     void handle_error(val event) {
         debugLogToChannel("WS error occurred");
         if (on_error_) {
-            g_emscripten_scheduler->invoke([this]() { on_error_("WebSocket error"); });
+            scheduler_->invoke([this, alive = connection_alive_]() {
+                if (*alive && on_error_) on_error_("WebSocket error");
+            });
         }
     }
 
@@ -275,10 +343,13 @@ public:
         }
 
         state_ = transport_state::closed;
-        ws_ = val::null();
+        // Keep the socket until disconnect() can detach its handlers and purge
+        // frames already queued with this raw client pointer, even after CLOSED.
 
         if (on_close_) {
-            g_emscripten_scheduler->invoke([this, code, reason]() { on_close_(code, reason); });
+            scheduler_->invoke([this, alive = connection_alive_, code, reason]() {
+                if (*alive && on_close_) on_close_(code, reason);
+            });
         }
     }
 };
@@ -423,7 +494,13 @@ public:
     }
 
     std::unique_ptr<sync_transport> create_sync_transport() override {
-        return std::make_unique<emscripten_websocket_client>();
+        throw std::runtime_error("Browser transport requires its owner scheduler");
+    }
+
+    std::unique_ptr<sync_transport> create_sync_transport(std::shared_ptr<scheduler> sched) override {
+        auto owner = std::dynamic_pointer_cast<emscripten_scheduler>(sched);
+        if (!owner) throw std::runtime_error("Browser transport requires its owner scheduler");
+        return std::make_unique<emscripten_websocket_client>(std::move(owner));
     }
 };
 
@@ -612,7 +689,6 @@ public:
         if (!ref_) return JsDynamicObject();
         auto* linked = ref_->get_object(name);
         if (!linked) return JsDynamicObject();
-        retainDynamicObjectRef(linked);
         return JsDynamicObject(linked);
     }
 
@@ -703,7 +779,6 @@ public:
         auto proxy = (*ref_)[idx];
         if (!proxy.object) return JsDynamicObject();
         auto* obj_ref = dynamic_object_ref::wrap(proxy.object);
-        retainDynamicObjectRef(obj_ref);
         return JsDynamicObject(obj_ref);
     }
 
@@ -979,11 +1054,63 @@ void throw_js_error(const std::string& msg) {
 }
 
 class JsLattice {
-    /// True only for the read-only audit constructor, which retains the ref
-    /// it creates; releaseStorage() releases exactly that reference.
     bool owns_reference_ = false;
+    std::unordered_set<uint64_t> socket_listener_ids_;
+    inline static std::map<lattice::swift_lattice*, size_t> native_holders_;
+
+    void own_reference() {
+        retainSwiftLatticeRef(ref_);
+        owns_reference_ = true;
+        ++native_holders_[ref_->get()];
+    }
+
+    std::shared_ptr<emscripten_scheduler> owner_scheduler() const {
+        if (!ref_) return nullptr;
+        return std::dynamic_pointer_cast<emscripten_scheduler>(ref_->get()->get_scheduler());
+    }
+
+    static std::string release_reference(swift_lattice_ref* ref) {
+        auto* native = ref->get();
+        auto holder = native_holders_.find(native);
+        const bool last = holder == native_holders_.end() || holder->second == 1;
+        if (last) {
+            auto owner = std::dynamic_pointer_cast<emscripten_scheduler>(native->get_scheduler());
+            if (owner && owner->executing()) {
+                // Embind .delete() can be called reentrantly from an observer.
+                // Transfer this retained reference to a browser task OUTSIDE
+                // the owner queue; do not destroy a synchronizer on its stack.
+                emscripten_set_timeout([](void* arg) {
+                    try {
+                        release_reference(static_cast<swift_lattice_ref*>(arg));
+                    } catch (...) {
+                        debugLogToChannel("Deferred Lattice release failed; reference retained");
+                    }
+                }, 0, ref);
+                return "pending";
+            }
+            if (owner) owner->shutdown();
+            native->disconnect_sync();
+            native->close();
+            if (holder != native_holders_.end()) native_holders_.erase(holder);
+        } else {
+            --holder->second;
+        }
+        releaseSwiftLatticeRef(ref);
+        return last ? "closed" : "shared";
+    }
 
 public:
+    static val lifecycleDiagnostics() {
+        val result = val::object();
+        result.set("nativeOwners", val(static_cast<unsigned>(native_holders_.size())));
+        size_t holders = 0;
+        for (const auto& [owner, count] : native_holders_) holders += count;
+        result.set("retainedHandles", val(static_cast<unsigned>(holders)));
+        result.set("schedulers", val(static_cast<unsigned>(emscripten_scheduler::alive_count)));
+        result.set("pendingCallbacks", val(static_cast<unsigned>(emscripten_scheduler::pending_count)));
+        result.set("nativeDatabases", val(static_cast<double>(lattice_db::alive_count().load())));
+        return result;
+    }
     // Constructor without sync
     JsLattice(const std::string& path, const val& schemas)
         : JsLattice(path, schemas, "", "") {}
@@ -1007,16 +1134,9 @@ public:
         try {
             swift_configuration config;
             config.path = path;
-            config.sched = g_emscripten_scheduler;
+            config.sched = std::make_shared<emscripten_scheduler>();
             ref_ = swift_lattice_ref::create_dynamic(config);
-            // _make() constructs with ref_count_ 0 and nothing here ever
-            // retained — so release() underflowed 0→-1, returned false, and
-            // the wrapper (with the ONLY shared_ptr) leaked: the exact
-            // refcount no-op the drain review flagged. Take the reference
-            // this handle actually owns; releaseStorage() drops it to zero
-            // and the connection really closes.
-            retainSwiftLatticeRef(ref_);
-            owns_reference_ = true;
+            own_reference();
         } catch (const std::exception& e) {
             throw_js_error(std::string("Failed to open database read-only: ") + e.what());
         } catch (...) {
@@ -1032,7 +1152,7 @@ public:
                 init_emscripten_network();
             }
 
-            configuration config(path, g_emscripten_scheduler);
+            configuration config(path, std::make_shared<emscripten_scheduler>());
 
             if (!websocket_url.empty()) {
                 config.websocket_url = websocket_url;
@@ -1041,6 +1161,7 @@ public:
 
             auto schema_vec = js_to_schema_vector(schemas);
             ref_ = swift_lattice_ref::create(config, schema_vec);
+            own_reference();
         } catch (const std::exception& e) {
             throw_js_error(std::string("Failed to open database: ") + e.what());
         } catch (...) {
@@ -1057,7 +1178,7 @@ public:
                 init_emscripten_network();
             }
 
-            configuration config(path, g_emscripten_scheduler);
+            configuration config(path, std::make_shared<emscripten_scheduler>());
             config.target_schema_version = schema_version;
 
             if (!websocket_url.empty()) {
@@ -1109,15 +1230,15 @@ public:
             } else {
                 ref_ = swift_lattice_ref::create(config, schema_vec);
             }
+            own_reference();
         } catch (const std::exception& e) {
             throw_js_error(std::string("Failed to open database with migration: ") + e.what());
         }
     }
 
     ~JsLattice() {
-        if (ref_) {
-            releaseSwiftLatticeRef(ref_);
-        }
+        try { releaseStorage(); }
+        catch (...) { debugLogToChannel("Lattice release failed; reference retained"); }
     }
 
     // Add an object to a table, returns the new object's ID
@@ -1359,7 +1480,6 @@ public:
 
             // Wrap in dynamic_object_ref
             auto* obj_ref = new dynamic_object_ref(unmanaged_obj);
-            retainDynamicObjectRef(obj_ref);
 
             return JsDynamicObject(obj_ref);
         } catch (const std::exception& e) {
@@ -1401,7 +1521,6 @@ public:
 
             // Create a dynamic_object_ref from the managed object
             auto* obj_ref = new dynamic_object_ref(*result);
-            retainDynamicObjectRef(obj_ref);
 
             return JsDynamicObject(obj_ref);
         } catch (const std::exception& e) {
@@ -1485,21 +1604,77 @@ public:
         }
     }
 
-    // Release this handle's reference to the underlying store. For a
-    // read-only audit open (which holds the ONLY reference) this closes the
-    // sqlite connection — embind's .delete() alone frees just the wrapper
-    // and leaked one connection per abandoned store. Idempotent; every other
-    // method is invalid after this. Cached/writable instances shared with a
-    // live page merely drop one reference.
-    void releaseStorage() {
-        if (ref_ && owns_reference_) {
-            releaseSwiftLatticeRef(ref_);   // 1 → 0: deletes the wrapper, releases the only shared_ptr
-            ref_ = nullptr;
-            owns_reference_ = false;
+    // Exact native owner identity, including cache reuse. No URL guessing or
+    // module-global listener is involved in the supported lifecycle API.
+    val getSyncSocket() const {
+        auto owner = owner_scheduler();
+        return owner ? owner->socket() : val::null();
+    }
+
+    uint32_t watchSyncSocket(val callback) {
+        auto owner = owner_scheduler();
+        if (!owner) throw_js_error("Lattice has been released");
+        const auto id = owner->watch_socket([callback](val socket) {
+            try { callback(socket); } catch (...) { /* Consumer errors cannot interrupt Core setup. */ }
+        });
+        socket_listener_ids_.insert(id);
+        return static_cast<uint32_t>(id);
+    }
+
+    void unwatchSyncSocket(uint32_t id) {
+        if (!socket_listener_ids_.erase(id)) return;
+        if (auto owner = owner_scheduler()) owner->unwatch_socket(id);
+    }
+
+    void requestSyncUpload() {
+        if (!ref_) throw_js_error("Lattice has been released");
+        ref_->get()->sync_now();
+    }
+
+    // Stop incoming work on the final owner while retaining SQLite for the
+    // final asynchronous OPFS snapshot. Other live handles keep their transport.
+    std::string prepareClose() {
+        if (!ref_ || !owns_reference_) return "already-released";
+        auto owner = owner_scheduler();
+        if (owner && owner->executing()) throw_js_error("Close preparation requires a later browser task");
+        retire_observers();
+        if (owner) for (auto id : socket_listener_ids_) owner->unwatch_socket(id);
+        socket_listener_ids_.clear();
+        const auto holder = native_holders_.find(ref_->get());
+        if (holder != native_holders_.end() && holder->second > 1) return "shared";
+        if (owner) owner->shutdown();
+        ref_->get()->disconnect_sync();
+        lattice::detail::LatticeCache::instance().evict(ref_->get());
+        return "exclusive";
+    }
+
+    double getPendingSyncUploadCount() const {
+        if (!ref_) throw_js_error("Lattice has been released");
+        auto& db = ref_->get()->db();
+        std::string sql = "SELECT count(*) AS n FROM AuditLog a WHERE a.isSynchronized = 0";
+        if (db.table_exists("_lattice_sync_state")) {
+            sql += " AND NOT EXISTS (SELECT 1 FROM _lattice_sync_state s"
+                   " WHERE s.audit_entry_id = a.id AND s.is_synchronized = 1)";
         }
-        // Cached/writable handles never retained (their survival across
-        // .delete() is load-bearing for same-path sharing — see
-        // src/sync-socket.ts), so releasing here would underflow; no-op.
+        const auto rows = db.query(sql, {});
+        return static_cast<double>(std::get<int64_t>(rows.at(0).at("n")));
+    }
+
+    // Drop exactly this JS handle. Cached sibling handles keep the same Core
+    // owner alive. Last-owner close discards queued work before disconnecting
+    // and closing: Core's blocking drain observes is_connected=false and cannot
+    // stall the browser. Optional upload drain happens asynchronously in JS.
+    std::string releaseStorage() {
+        if (!ref_ || !owns_reference_) return "already-released";
+        retire_observers();
+        if (auto owner = owner_scheduler()) {
+            for (auto id : socket_listener_ids_) owner->unwatch_socket(id);
+        }
+        socket_listener_ids_.clear();
+        const auto result = release_reference(ref_);
+        ref_ = nullptr;
+        owns_reference_ = false;
+        return result;
     }
 
     // Checkpoint WAL to flush all changes into the main database file.
@@ -1724,67 +1899,91 @@ public:
     // Calls the JS callback with JSON of new entries when INSERTs happen
     // Returns observer ID (for removal)
     uint64_t observeAuditLog(val callback) {
+        if (!ref_) throw_js_error("Lattice has been released");
         try {
-            struct AuditLogContext {
-                val* callback;
-            };
-            auto* ctx = new AuditLogContext{new val(callback)};
-
-            auto observer_id = ref_->get()->add_table_observer("AuditLog", ctx,
-                // Batched observer contract: one call per WAL flush with
-                // parallel arrays (count rows of op/rowId/globalRowId).
-                [](void* context, const char* const* operations, const int64_t* row_ids,
-                   const char* const* global_row_ids, size_t count) {
-                    auto* ctx = static_cast<AuditLogContext*>(context);
+            auto owner = swift_lattice_ref::shared_for_lattice(ref_->get());
+            if (!owner || owner->is_closed())
+                throw std::runtime_error("AuditLog observation requires an open store");
+            auto ctx = std::make_shared<observer_callback>(std::move(callback));
+            return register_table_observer("AuditLog", ctx,
+                [ctx, weak_owner = std::weak_ptr<lattice::swift_lattice>(owner)](
+                    const std::vector<lattice_db::change_event>& batch) {
+                    if (!ctx->active) return;
+                    auto owner = weak_owner.lock();
+                    if (!owner || owner->is_closed()) return;
                     std::string json = "[";
                     bool any = false;
-                    for (size_t i = 0; i < count; ++i) {
-                        if (std::string(operations[i]) != "INSERT") continue;
-                        std::string gid(global_row_ids[i] ? global_row_ids[i] : "");
+                    for (const auto& [table, operation, row_id, global_id, fields] : batch) {
+                        if (!ctx->active) return;
+                        if (operation != "INSERT") continue;
+                        // Notifications identify AuditLog rows, not model operations.
+                        // Match both stored identities before serializing the full row.
+                        auto rows = owner->db().query(
+                            "SELECT id, globalId, tableName, operation, rowId, globalRowId, "
+                            "changedFields, changedFieldsNames, CAST(timestamp AS TEXT) AS timestamp, isFromRemote, "
+                            "isSynchronized FROM AuditLog WHERE id = ? AND globalId = ?",
+                            {row_id, global_id});
+                        if (rows.size() != 1)
+                            throw std::runtime_error("Observed AuditLog row is no longer available");
+                        const auto& row = rows.front();
+                        auto text = [&row](const char* key) -> const std::string& {
+                            return std::get<std::string>(row.at(key));
+                        };
+                        auto integer = [&row](const char* key) -> int64_t {
+                            return std::get<int64_t>(row.at(key));
+                        };
+                        audit_log_entry entry;
+                        entry.id = integer("id");
+                        entry.global_id = text("globalId");
+                        entry.table_name = text("tableName");
+                        entry.operation = text("operation");
+                        entry.row_id = integer("rowId");
+                        entry.global_row_id = text("globalRowId");
+                        entry.changed_fields = audit_log_entry::parse_changed_fields(text("changedFields"));
+                        entry.changed_fields_names = audit_log_entry::parse_changed_fields_names(text("changedFieldsNames"));
+                        entry.timestamp = text("timestamp");
+                        entry.is_from_remote = integer("isFromRemote") != 0;
+                        entry.is_synchronized = integer("isSynchronized") != 0;
                         if (any) json += ",";
-                        json += "{\"globalId\":\"" + gid + "\",\"operation\":\"" +
-                                std::string(operations[i]) + "\",\"rowId\":" +
-                                std::to_string(row_ids[i]) + "}";
+                        json += entry.to_json();
                         any = true;
                     }
                     json += "]";
-                    if (any) (*(ctx->callback))(json);
-                },
-                [](void* context) {
-                    auto* ctx = static_cast<AuditLogContext*>(context);
-                    delete ctx->callback;
-                    delete ctx;
+                    // Missing or malformed rows fail before publication. This live
+                    // API does not promise replay after audit history is pruned.
+                    if (any && ctx->active) {
+                        auto callback = ctx->callback;
+                        callback(json);
+                    }
                 });
-
-            observer_callbacks_[observer_id] = ctx->callback;
-            return observer_id;
         } catch (const std::exception& e) {
-            return 0;
+            throw_js_error(std::string("observeAuditLog failed: ") + e.what());
         }
+        return 0;
     }
 
     // Observe a specific model table for changes.
     // Callback receives a CollectionChange val: {operation, rowId, globalRowId}
     // globalRowId IS the entity's own globalId (not an AuditLog entry ID).
     uint64_t observeTable(const std::string& table_name, val callback) {
+        if (!ref_) throw_js_error("Lattice has been released");
         try {
-            auto* stored_callback = new val(callback);
-            auto observer_id = ref_->get()->add_table_observer(table_name, stored_callback,
+            auto ctx = std::make_shared<observer_callback>(std::move(callback));
+            return register_table_observer(table_name, ctx,
                 // Batched observer contract — deliver one JS callback per row
                 // to preserve the historical per-event shape.
-                [](void* context, const char* const* operations, const int64_t* row_ids,
-                   const char* const* global_row_ids, size_t count) {
-                    auto* cb = static_cast<val*>(context);
-                    for (size_t i = 0; i < count; ++i) {
+                [ctx](const std::vector<lattice_db::change_event>& batch) {
+                    for (const auto& [table, operation, row_id, global_id, fields] : batch) {
+                        // The first callback may unsubscribe or close its handle.
+                        if (!ctx->active) break;
                         val entry = val::object();
-                        entry.set("operation", val(std::string(operations[i])));
-                        entry.set("rowId", val(static_cast<double>(row_ids[i])));
-                        entry.set("globalRowId", val(std::string(global_row_ids[i] ? global_row_ids[i] : "")));
-                        (*cb)(entry);
+                        entry.set("operation", val(operation));
+                        entry.set("rowId", val(static_cast<double>(row_id)));
+                        entry.set("globalRowId", val(global_id));
+                        auto callback = ctx->callback;
+                        callback(entry);
                     }
                 });
-            observer_callbacks_[observer_id] = stored_callback;
-            return observer_id;
         } catch (const std::exception& e) {
             return 0;
         }
@@ -1793,14 +1992,7 @@ public:
     // Remove an audit log observer
     void removeAuditLogObserver(uint64_t observer_id) {
         try {
-            ref_->get()->remove_table_observer("AuditLog", observer_id);
-
-            // Clean up stored callback
-            auto it = observer_callbacks_.find(observer_id);
-            if (it != observer_callbacks_.end()) {
-                delete it->second;
-                observer_callbacks_.erase(it);
-            }
+            retire_observer(observer_id, observer_kind::table, "AuditLog", 0);
         } catch (const std::exception& e) {
             printf("[removeAuditLogObserver] Error: %s\n", e.what());
         }
@@ -1809,12 +2001,7 @@ public:
     // Remove a table observer by ID and table name
     void removeTableObserver(const std::string& table_name, uint64_t observer_id) {
         try {
-            ref_->get()->remove_table_observer(table_name, observer_id);
-            auto it = observer_callbacks_.find(observer_id);
-            if (it != observer_callbacks_.end()) {
-                delete it->second;
-                observer_callbacks_.erase(it);
-            }
+            retire_observer(observer_id, observer_kind::table, table_name, 0);
         } catch (const std::exception& e) {
             printf("[removeTableObserver] Error: %s\n", e.what());
         }
@@ -1869,14 +2056,17 @@ public:
     // ========================================================================
 
     uint64_t observeObject(const std::string& table_name, int64_t row_id, val callback) {
+        if (!ref_) throw_js_error("Lattice has been released");
         try {
-            auto* stored_callback = new val(callback);
-            auto observer_id = ref_->get()->add_object_observer(table_name, row_id, stored_callback,
-                [](const char* changed_fields_names, void* context) {
-                    auto* cb = static_cast<val*>(context);
-                    (*cb)(val(std::string(changed_fields_names)));
+            auto ctx = std::make_shared<observer_callback>(std::move(callback));
+            observer_registration registration{observer_kind::object, table_name, row_id, ctx};
+            auto observer_id = ref_->get()->lattice_db::add_object_observer(table_name, row_id,
+                [ctx](const std::string& changed_fields_names) {
+                    if (!ctx->active) return;
+                    auto callback = ctx->callback;
+                    callback(val(changed_fields_names));
                 });
-            observer_callbacks_[observer_id] = stored_callback;
+            keep_observer(observer_id, std::move(registration));
             return observer_id;
         } catch (const std::exception& e) {
             throw_js_error(std::string("observeObject failed: ") + e.what());
@@ -1886,12 +2076,7 @@ public:
 
     void removeObjectObserver(const std::string& table_name, int64_t row_id, uint64_t observer_id) {
         try {
-            ref_->get()->remove_object_observer(table_name, row_id, observer_id);
-            auto it = observer_callbacks_.find(observer_id);
-            if (it != observer_callbacks_.end()) {
-                delete it->second;
-                observer_callbacks_.erase(it);
-            }
+            retire_observer(observer_id, observer_kind::object, table_name, row_id);
         } catch (const std::exception& e) {
             printf("[removeObjectObserver] Error: %s\n", e.what());
         }
@@ -1989,31 +2174,41 @@ public:
     }
 
     uint64_t onSyncProgress(val callback) {
+        if (!ref_) throw_js_error("Lattice has been released");
         try {
-            auto* stored_callback = new val(callback);
-            ref_->get()->set_on_sync_progress(stored_callback,
-                // 6-arg shape as of LatticeCore 1.3.x: sync_id labels which
-                // channel the update belongs to (multiple synchronizers
-                // multiplex one callback). Surfaced to JS as `syncId`.
-                [](void* context, int64_t pending, int64_t total, int64_t acked,
-                   int64_t received, const char* sync_id) {
-                    auto* cb = static_cast<val*>(context);
-                    val progress = val::object();
-                    progress.set("pendingUpload", val(static_cast<double>(pending)));
-                    progress.set("totalUpload", val(static_cast<double>(total)));
-                    progress.set("acked", val(static_cast<double>(acked)));
-                    progress.set("received", val(static_cast<double>(received)));
-                    progress.set("syncId", val(std::string(sync_id ? sync_id : "")));
-                    (*cb)(progress);
-                });
-            // Store for cleanup - use a special key
-            uint64_t key = reinterpret_cast<uintptr_t>(stored_callback);
-            observer_callbacks_[key] = stored_callback;
-            return key;
+            auto ctx = std::make_shared<observer_callback>(std::move(callback));
+            try {
+                ref_->get()->lattice_db::set_on_sync_progress(
+                    [ctx](const synchronizer::sync_progress& p) {
+                        if (!ctx->active) return;
+                        val progress = val::object();
+                        progress.set("pendingUpload", val(static_cast<double>(p.pending_upload)));
+                        progress.set("totalUpload", val(static_cast<double>(p.total_upload)));
+                        progress.set("acked", val(static_cast<double>(p.acked)));
+                        progress.set("received", val(static_cast<double>(p.received)));
+                        progress.set("syncId", val(p.sync_id));
+                        auto callback = ctx->callback;
+                        callback(progress);
+                    });
+            } catch (...) {
+                // Core may already have installed copies on some siblings.
+                ctx->retire();
+                throw;
+            }
+            if (progress_callback_) progress_callback_->retire();
+            progress_callback_ = std::move(ctx);
+            return ++progress_callback_id_;
         } catch (const std::exception& e) {
             throw_js_error(std::string("onSyncProgress failed: ") + e.what());
         }
         return 0;
+    }
+
+    void removeSyncProgress(uint64_t callback_id) {
+        if (progress_callback_ && callback_id == progress_callback_id_) {
+            progress_callback_->retire();
+            progress_callback_.reset();
+        }
     }
 
     void updateSyncFilter(const std::string& filter_json) {
@@ -2071,7 +2266,90 @@ public:
 
 private:
     swift_lattice_ref* ref_ = nullptr;
-    std::unordered_map<uint64_t, val*> observer_callbacks_;
+    // Core copies observer callbacks into queued batches. Shared contexts
+    // keep those copies valid; retirement suppresses them without deleting
+    // callback storage that an executing batch may still reference.
+    struct observer_callback {
+        bool active = true;
+        val callback;
+        explicit observer_callback(val cb) : callback(std::move(cb)) {}
+        void retire() {
+            active = false;
+            callback = val::undefined();
+        }
+    };
+    enum class observer_kind { table, object };
+    struct observer_registration {
+        observer_kind kind;
+        std::string table;
+        int64_t row_id;
+        std::shared_ptr<observer_callback> context;
+    };
+    std::unordered_map<uint64_t, observer_registration> observer_callbacks_;
+    std::shared_ptr<observer_callback> progress_callback_;
+    uint64_t progress_callback_id_ = 0;
+
+    void remove_core_observer(uint64_t id, const observer_registration& registration) {
+        if (!ref_) return;
+        if (registration.kind == observer_kind::table) {
+            ref_->get()->remove_table_observer(registration.table, id);
+        } else {
+            ref_->get()->remove_object_observer(registration.table, registration.row_id, id);
+        }
+    }
+
+    void keep_observer(uint64_t id, observer_registration registration) {
+        try {
+            // Keep registration intact until insertion succeeds so failures
+            // can remove the native registration and retire its callback.
+            if (!observer_callbacks_.emplace(id, registration).second) {
+                throw std::runtime_error("Duplicate observer identity");
+            }
+        } catch (...) {
+            registration.context->retire();
+            try { remove_core_observer(id, registration); } catch (...) {}
+            throw;
+        }
+    }
+
+    uint64_t register_table_observer(
+        const std::string& table,
+        const std::shared_ptr<observer_callback>& context,
+        std::function<void(const std::vector<lattice_db::change_event>&)> callback) {
+        observer_registration registration{observer_kind::table, table, 0, context};
+        auto id = ref_->get()->lattice_db::add_table_observer(table, std::move(callback));
+        keep_observer(id, std::move(registration));
+        return id;
+    }
+
+    void retire_observer(uint64_t id, observer_kind kind,
+                         const std::string& table, int64_t row_id) {
+        auto it = observer_callbacks_.find(id);
+        if (it == observer_callbacks_.end()) return;
+        const auto& registration = it->second;
+        if (registration.kind != kind || registration.table != table ||
+            registration.row_id != row_id) return;
+        registration.context->retire();
+        remove_core_observer(id, registration);
+        observer_callbacks_.erase(it);
+    }
+
+    // Called before this handle transfers/releases ref_. Never clear Core's
+    // shared progress callback slot: another cached handle may own it now.
+    void retire_observers() {
+        for (auto& [id, registration] : observer_callbacks_) {
+            registration.context->retire();
+        }
+        if (progress_callback_) {
+            progress_callback_->retire();
+            progress_callback_.reset();
+        }
+        while (!observer_callbacks_.empty()) {
+            auto it = observer_callbacks_.begin();
+            try { remove_core_observer(it->first, it->second); } catch (...) {}
+            observer_callbacks_.erase(it);
+        }
+    }
 };
 
 // ============================================================================
@@ -2093,7 +2371,6 @@ JsDynamicObject createDynamicObject(const std::string& table_name, const val& pr
 
         // Wrap in dynamic_object_ref
         auto* obj_ref = new dynamic_object_ref(unmanaged_obj);
-        retainDynamicObjectRef(obj_ref);
 
         return JsDynamicObject(obj_ref);
     } catch (const std::exception& e) {
@@ -2179,6 +2456,7 @@ static void enable_shared_cache() {
 }
 
 EMSCRIPTEN_BINDINGS(lattice) {
+    function("_lifecycleDiagnostics", &JsLattice::lifecycleDiagnostics);
     // Version check
     function("getWasmVersion", &getWasmVersion);
 
@@ -2268,7 +2546,14 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("nearestNeighbors", &JsLattice::nearestNeighbors)
         // Sync progress / filters / compaction
         .function("getSyncProgress", &JsLattice::getSyncProgress)
+        .function("getSyncSocket", &JsLattice::getSyncSocket)
+        .function("watchSyncSocket", &JsLattice::watchSyncSocket)
+        .function("unwatchSyncSocket", &JsLattice::unwatchSyncSocket)
+        .function("requestSyncUpload", &JsLattice::requestSyncUpload)
+        .function("prepareClose", &JsLattice::prepareClose)
+        .function("getPendingSyncUploadCount", &JsLattice::getPendingSyncUploadCount)
         .function("onSyncProgress", &JsLattice::onSyncProgress)
+        .function("removeSyncProgress", &JsLattice::removeSyncProgress)
         .function("updateSyncFilter", &JsLattice::updateSyncFilter)
         .function("clearSyncFilter", &JsLattice::clearSyncFilter)
         .function("compactAuditLog", &JsLattice::compactAuditLog)

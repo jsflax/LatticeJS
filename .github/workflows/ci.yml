@@ -1,9 +1,8 @@
-# Minimal CI: proves the wasm module compiles against the pinned LatticeCore
-# and that the TypeScript layer's behavior (vitest) is green.
+# Build the pinned Core, check TypeScript behavior, and execute the rebuilt
+# WASM's native ownership/observer/transport lifecycle regression suite.
 #
-# HONEST SCOPE: this does NOT exercise wasm runtime behavior — nothing here
-# instantiates lattice.wasm in a browser/worker. Runtime coverage (OPFS, sync,
-# threading) is a separate, browser-driven concern.
+# The native lifecycle suite uses real WASM + SQLite in Node with a local
+# EventTarget WebSocket fixture. Browser, OPFS, and live sync need separate tests.
 name: CI
 
 on:
@@ -14,25 +13,45 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup emsdk
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          # Keep in lockstep with the locally verified toolchain
-          # (see CHANGELOG / wasm/build/BUILD_INFO.json).
-          version: 5.0.6
-          actions-cache-folder: emsdk-cache
+      - name: Prepare isolated source and pinned toolchain
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          ci_root="$HOME/localdev/lattice-js-ci"
+          mkdir -p "$ci_root/tmp" "$ci_root/cache/npm" "$ci_root/cache/emscripten"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$ci_root/source"
+          git -C "$ci_root/source" checkout --detach "$GITHUB_SHA"
+          git -C "$ci_root/source" submodule update --init --recursive
+          git init "$ci_root/emsdk"
+          git -C "$ci_root/emsdk" fetch --depth=1 https://github.com/emscripten-core/emsdk.git 948c31acd3f369a5da276e33ab2ed57108c165e5
+          git -C "$ci_root/emsdk" checkout --detach FETCH_HEAD
+          "$ci_root/emsdk/emsdk" install 5.0.6
+          "$ci_root/emsdk/emsdk" activate 5.0.6
+          echo "$ci_root/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "LATTICE_CI_SOURCE=$ci_root/source" >> "$GITHUB_ENV"
+          echo "EM_CONFIG=$ci_root/emsdk/.emscripten" >> "$GITHUB_ENV"
+          echo "EM_CACHE=$ci_root/cache/emscripten" >> "$GITHUB_ENV"
+          echo "npm_config_cache=$ci_root/cache/npm" >> "$GITHUB_ENV"
+          echo "TMPDIR=$ci_root/tmp" >> "$GITHUB_ENV"
 
       - name: Build wasm module against pinned LatticeCore
-        run: ./wasm/build.sh --clean
+        env:
+          EMCC_CORES: 2
+          BINARYEN_CORES: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+          LATTICE_BUILD_JOBS: 2
+        run: cd "$LATTICE_CI_SOURCE" && ./wasm/build.sh --clean
 
       - name: Assert wasm artifacts exist and are sane
         run: |
           set -euo pipefail
+          cd "$LATTICE_CI_SOURCE"
           ls -la wasm/build/lattice.js wasm/build/lattice.wasm
           # lattice.wasm was ~2.8 MB at 1.0.0-rc.1; a tiny blob means the
           # link silently produced a stub. Floor well below, ceiling well above.
@@ -47,11 +66,36 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
+      - name: Run rebuilt WASM native lifecycle regressions
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          cd "$LATTICE_CI_SOURCE"
+          result_dir="$HOME/localdev/lattice-js-lifecycle-ci"
+          mkdir -p "$result_dir"
+          echo "LATTICE_LIFECYCLE_RESULTS=$result_dir" >> "$GITHUB_ENV"
+          # An external deadline also bounds a synchronous native hang.
+          timeout --signal=KILL 100s node test/wasm-lifecycle.mjs \
+            --output "$result_dir/native-runtime.json" \
+            > "$result_dir/native-runtime.log" 2>&1
+
+      - name: Preserve native lifecycle receipts
+        if: ${{ always() && env.LATTICE_LIFECYCLE_RESULTS != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-native-lifecycle
+          path: ${{ env.LATTICE_LIFECYCLE_RESULTS }}
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Install dependencies
-        run: npm ci
+        run: cd "$LATTICE_CI_SOURCE" && npm ci
 
       - name: Run TypeScript test suite (no wasm runtime)
-        run: npx vitest run
+        run: cd "$LATTICE_CI_SOURCE" && npx vitest run --poolOptions.threads.singleThread
+
+      - name: Typecheck public API
+        run: cd "$LATTICE_CI_SOURCE" && npm run build:ts

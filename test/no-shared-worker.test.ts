@@ -83,7 +83,7 @@ describe('SharedWorker-free operation', () => {
         const lattice = await Lattice.open('regression-no-shared-worker.db', [Note]);
 
         expect(lattice).toBeDefined();
-        await expect(lattice.close()).resolves.toBeUndefined();
+        await expect(lattice.close()).resolves.toMatchObject({ native: 'unsupported', transport: 'not-configured', snapshot: 'unavailable' });
     });
 
     it('constructs no SharedWorker even where one is available', async () => {

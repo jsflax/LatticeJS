@@ -3,6 +3,13 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
+BUILD_JOBS="${LATTICE_BUILD_JOBS:-2}"
+if ! [[ "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "LATTICE_BUILD_JOBS must be a positive integer" >&2
+    exit 1
+fi
+export EMCC_CORES="${EMCC_CORES:-$BUILD_JOBS}"
+export BINARYEN_CORES="${BINARYEN_CORES:-$BUILD_JOBS}"
 
 # Check for Emscripten
 if ! command -v emcc &> /dev/null; then
@@ -29,7 +36,7 @@ emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
 
 # Build
 echo "Building WASM module..."
-emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+cmake --build . --parallel "$BUILD_JOBS"
 
 # Provenance stamp: which LatticeCore this blob was built from. The wire
 # protocol is version-coupled to the server — the rule is: rebuild from the

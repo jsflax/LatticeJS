@@ -1,83 +1,17 @@
-// Sync-WebSocket ownership and teardown.
+import type { SyncStateInfo, LatticeCloseResult } from './types';
+
+// Exact sync-WebSocket ownership, observation and bounded teardown.
 //
-// WHERE THE SOCKET LIVES
-// ----------------------
-// The sync socket is created WASM-SIDE, not here. `new wasmModule.Lattice(
-// path, schemas, websocketUrl, authToken)` runs, synchronously inside the C++
-// constructor, `lattice_db::setup_sync_if_configured()` ->
-// `synchronizer_base::connect()` -> `emscripten_websocket_client::connect()`,
-// which does `val::global("WebSocket").new_(url)` — i.e. it calls OUR realm's
-// `WebSocket` constructor and keeps the resulting JS object in a C++ `val`.
-// It then stamps the socket with `_lattice_client` (the transport's raw C++
-// pointer) and subscribes four module-level handlers via addEventListener:
-// `Module._ws_onopen_handler` / `_ws_onmessage_handler` / `_ws_onerror_handler`
-// / `_ws_onclose_handler`.
+// New native bindings expose each handle's actual WebSocket. Shared native
+// owners therefore share the same object; different stores on one endpoint do
+// not. The constructor tracker remains only for legacy builds and diagnostics:
+// newly created sockets can be attributed, but cached sockets are never adopted
+// by URL. Browser reconnect remains app-owned.
 //
-// WHY close() COULD NOT TEAR IT DOWN
-// ----------------------------------
-// C++ *does* have the teardown: `~lattice_db` -> `teardown_sync()` ->
-// `synchronizer_->disconnect()` -> `emscripten_websocket_client::disconnect()`,
-// which detaches the handlers and closes the socket. Nothing reaches it from
-// JS, for two independent reasons:
-//
-//   1. NO BINDING. `EMSCRIPTEN_BINDINGS(lattice)` in wasm/bindings.cpp registers
-//      ~40 methods on `class_<JsLattice>("Lattice")` and NONE of them is
-//      `close`, `disconnect`, `disconnectSync` or `stopSync`. The core exposes
-//      `lattice_db::close()` and `lattice_db::disconnect_sync()`, and the Swift
-//      bridge re-exports `swift_lattice_ref::close()` — but the embind surface
-//      skips all three. (Verified against the shipped wasm/build/lattice.js:
-//      the only ws-related module exports are `_ws_handle_*`, `_ws_purge_client`
-//      and `setSyncStateCallback`.) So the ONLY teardown JS can reach is
-//      embind's `.delete()`, which runs `~JsLattice`.
-//
-//   2. `~JsLattice` IS A NO-OP FOR THE UNDERLYING DB. It calls
-//      `releaseSwiftLatticeRef(ref_)`, which is `if (ptr->release()) delete ptr;`
-//      with `bool release() { return --ref_count_ == 0; }` over a
-//      `std::atomic<int> ref_count_{0}`. The factory `swift_lattice_ref::_make()`
-//      returns the heap ref UNRETAINED (`SWIFT_RETURNS_UNRETAINED` — Swift emits
-//      the balancing retain at the call site); every LatticeCAPI open therefore
-//      does `ref->retain();  // Start with ref_count = 1` right after
-//      `swift_lattice_ref::create(...)`. wasm/bindings.cpp does NOT. So the
-//      count starts at 0, `~JsLattice` decrements it to -1, `release()` returns
-//      false, the heap ref is never deleted, its `shared_ptr<swift_lattice>` is
-//      never dropped, `~lattice_db` never runs, `teardown_sync()` never runs —
-//      and the browser WebSocket stays OPEN for the life of the page.
-//
-// That is the leak: one live socket (plus the wasm sqlite instance behind it)
-// per open/close cycle, and server-side one per-connection Lattice held open
-// per leaked socket. A page that redials every 5s accumulates sockets instead
-// of replacing them.
-//
-// THE MITIGATION
-// --------------
-// The socket is an ordinary JS object in our realm, so JS can perform the exact
-// teardown the C++ `disconnect()` performs. This module tracks the sockets the
-// wasm transport creates (by wrapping the realm's `WebSocket` constructor for
-// the window in which the wasm Lattice is constructed) and replays
-// `emscripten_websocket_client::disconnect()` step for step, in its order:
-// purge deferred frames -> clear `_lattice_client` -> removeEventListener x4 ->
-// `close()`. Fixing the refcount needs a wasm rebuild (add `ref->retain()`
-// after `swift_lattice_ref::create` in wasm/bindings.cpp, matching
-// LatticeCAPI); until then the C++ objects still leak, but the two resources
-// that actually hurt in production — the browser socket and the server-side
-// connection — are released.
-//
-// Closing the socket cannot make the wasm redial: `synchronizer_base::
-// schedule_reconnect()` is `#ifdef __EMSCRIPTEN__ return;` — browser builds
-// reconnect at the app layer only.
-//
-// WHEN THE WASM IS REBUILT
-// ------------------------
-// The real fix is one line in each `JsLattice` constructor —
-// `ref_ = swift_lattice_ref::create(...); ref_->retain();` — but it needs
-// emsdk AND a decision about `teardown_sync()`'s Phase-0 drain: it waits up to
-// 2000ms for pending uploads to ACK ON THE CALLING THREAD, which in a
-// single-threaded browser build is a main-thread stall that cannot make
-// progress (the emscripten scheduler dispatches through the event loop the
-// stall is blocking). Land the retain together with an Emscripten-aware drain
-// (skip it, or bound it to 0) — not on its own. This module stays correct
-// either way: once C++ disconnects first, the socket is already CLOSING here
-// and `releaseSyncSockets` reports 0 closed instead of double-closing.
+// Last-wrapper release purges deferred frames and detaches native handlers before
+// initiating close. Per-instance listeners retire separately and synchronously.
+// Native storage release follows on a later browser task, through releaseStorage
+// in the new binding; legacy builds cannot claim native cleanup from JS deletion.
 
 /** The subset of `WebSocket` this module needs, plus the wasm's expando. */
 export interface TrackedSyncSocket {
@@ -89,6 +23,110 @@ export interface TrackedSyncSocket {
     addEventListener?(type: string, listener: any, options?: any): void;
     /** Raw C++ `emscripten_websocket_client*`, stamped by the wasm transport. */
     _lattice_client?: number;
+}
+
+/** One wrapper's subscriptions to its exact native transport. No global callbacks. */
+export class InstanceSyncState {
+    private listeners = new Set<(info: SyncStateInfo) => void>();
+    private internalListeners = new Set<(info: SyncStateInfo) => void>();
+    private detach: (() => void) | null = null;
+    private active = true;
+    private socket: TrackedSyncSocket | null = null;
+    private current: SyncStateInfo;
+    private lastSocket: TrackedSyncSocket | null = null;
+
+    constructor(instanceId: string, configured: boolean) {
+        this.current = Object.freeze({
+            state: configured ? 'connecting' : 'closed',
+            instanceId,
+            connectionGeneration: configured ? 1 : 0,
+            code: 0,
+            reason: configured ? '' : 'sync-not-configured',
+        });
+    }
+
+    subscribe(callback: ((info: SyncStateInfo) => void) | null): () => void {
+        if (callback === null) {
+            this.listeners.clear();
+            return () => {};
+        }
+        return this.addListener(callback, this.listeners);
+    }
+
+    /** Internal owner waits are not removed by the public null-clear operation. */
+    subscribeInternal(callback: (info: SyncStateInfo) => void): () => void {
+        return this.addListener(callback, this.internalListeners);
+    }
+
+    private addListener(callback: (info: SyncStateInfo) => void, listeners: Set<(info: SyncStateInfo) => void>): () => void {
+        if (typeof callback !== 'function') throw new TypeError('Sync state callback must be a function.');
+        if (!this.active) return () => {};
+        // A registration has its own identity even when callers reuse a function.
+        const listener = (info: SyncStateInfo) => callback(info);
+        listeners.add(listener);
+        this.deliver(listener, this.current);
+        return () => { listeners.delete(listener); };
+    }
+
+    private deliver(listener: (info: SyncStateInfo) => void, info: SyncStateInfo): void {
+        if (!this.active || this.current !== info || (!this.listeners.has(listener) && !this.internalListeners.has(listener))) return;
+        try { listener(info); } catch { /* A consumer cannot interrupt native dispatch or cleanup. */ }
+    }
+
+    private publish(state: SyncStateInfo['state'], code = 0, reason = '', force = false): void {
+        if (!this.active) return;
+        if (!force && this.current.state === state && this.current.code === code && this.current.reason === reason) return;
+        const info = Object.freeze({ ...this.current, state, code, reason });
+        this.current = info;
+        for (const listener of [...this.listeners, ...this.internalListeners]) this.deliver(listener, info);
+    }
+
+    bind(socket: TrackedSyncSocket | null): void {
+        if (!this.active) return;
+        this.detach?.();
+        this.detach = null;
+        const replacement = !!this.lastSocket && !!socket && this.lastSocket !== socket;
+        if (replacement) {
+            this.current = Object.freeze({ ...this.current, connectionGeneration: this.current.connectionGeneration + 1 });
+        }
+        this.socket = socket;
+        if (socket) this.lastSocket = socket;
+        if (!socket) {
+            if (this.lastSocket) this.publish('closed', 0, 'sync-transport-unavailable');
+            return;
+        }
+        const onOpen = () => { if (this.socket === socket) this.publish('open'); };
+        const onError = () => { if (this.socket === socket) this.publish('error'); };
+        const onClose = (event: { code?: unknown; reason?: unknown }) => {
+            if (this.socket !== socket) return;
+            this.publish('closed', typeof event?.code === 'number' ? event.code : 0,
+                typeof event?.reason === 'string' ? event.reason : '');
+        };
+        const handlers = [['open', onOpen], ['error', onError], ['close', onClose]] as const;
+        for (const [event, handler] of handlers) socket.addEventListener?.(event, handler);
+        this.detach = () => {
+            for (const [event, handler] of handlers) {
+                try { socket.removeEventListener(event, handler); } catch { /* Retired callbacks remain inert. */ }
+            }
+        };
+        // Attach before the state read: an already-open shared transport is replayed.
+        if (socket.readyState === OPEN) this.publish('open', 0, '', replacement);
+        else if (socket.readyState === CLOSING || socket.readyState === CLOSED) this.publish('closed', 0, '', replacement);
+        else this.publish('connecting', 0, '', replacement);
+    }
+
+    fail(): void { this.publish('error', 0, 'sync-open-failed'); }
+
+    /** Synchronous, idempotent retirement; even a copied dispatch list becomes inert. */
+    retire(): void {
+        if (!this.active) return;
+        this.active = false;
+        this.listeners.clear();
+        this.internalListeners.clear();
+        this.detach?.();
+        this.detach = null;
+        this.socket = null;
+    }
 }
 
 /** The `Module` handlers the wasm transport subscribes with. */
@@ -125,7 +163,7 @@ const WASM_HANDLERS: ReadonlyArray<readonly [string, keyof SyncSocketWasmModule]
 ];
 
 /**
- * Sockets constructed since the tracker was installed, newest last. Pruned of
+ * Exact claimed sockets plus legacy constructor captures, newest last. Pruned of
  * already-CLOSED entries whenever a capture starts, so it stays bounded across
  * a long-lived redial loop.
  */
@@ -195,26 +233,54 @@ export function captureSyncSockets<T>(create: () => T): { value: T; sockets: Tra
     return { value, sockets: registry.slice(mark) };
 }
 
-/**
- * Find a live tracked socket already serving `url` — the cached-instance case,
- * where the wasm handed this open an existing `swift_lattice` (and therefore an
- * existing transport) instead of building one. The transport appends
- * `?token=`/`&last-event-id=` to the configured URL, hence the prefix match.
- */
-export function adoptSyncSocket(url: string): TrackedSyncSocket | null {
-    for (let i = registry.length - 1; i >= 0; i--) {
-        const sock = registry[i];
-        if (sock.readyState === CLOSING || sock.readyState === CLOSED) continue;
-        if (sock.url === url || sock.url.startsWith(url)) return sock;
-    }
-    return null;
-}
-
 /** Register `sockets` as held by one more Lattice instance. */
 export function claimSyncSockets(sockets: readonly TrackedSyncSocket[]): void {
     for (const sock of sockets) {
+        if (!registry.includes(sock)) registry.push(sock);
         socketOwners.set(sock, (socketOwners.get(sock) ?? 0) + 1);
     }
+}
+
+/** Drop only JS leases. Modern native ownership decides whether to disconnect. */
+export function forgetSyncSockets(sockets: readonly TrackedSyncSocket[]): void {
+    for (const socket of sockets) {
+        const remaining = (socketOwners.get(socket) ?? 1) - 1;
+        if (remaining > 0) socketOwners.set(socket, remaining);
+        else socketOwners.delete(socket);
+    }
+    prune();
+}
+
+/** Observe native-initiated disconnect without touching shared transport handlers. */
+export function waitForSyncSocketsClosed(
+    sockets: readonly TrackedSyncSocket[], timeoutMs: number,
+): Promise<LatticeCloseResult['transport']> {
+    if (!sockets.length) return Promise.resolve('unavailable');
+    return new Promise(resolve => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let settled = false;
+        const completed = new Set<TrackedSyncSocket>();
+        const cleanups: Array<() => void> = [];
+        const finish = (result: LatticeCloseResult['transport']) => {
+            if (settled) return;
+            settled = true;
+            if (timer !== undefined) clearTimeout(timer);
+            for (const cleanup of cleanups) { try { cleanup(); } catch { /* Already settled. */ } }
+            resolve(result);
+        };
+        const check = () => {
+            if (sockets.every(socket => completed.has(socket) || socket.readyState === CLOSED)) finish('closed');
+        };
+        for (const socket of sockets) {
+            const onClose = () => { completed.add(socket); check(); };
+            try {
+                socket.addEventListener?.('close', onClose);
+                cleanups.push(() => socket.removeEventListener('close', onClose));
+            } catch { /* Ready state still supports an already-closed transport. */ }
+        }
+        check();
+        if (!settled) timer = setTimeout(() => finish('timeout'), timeoutMs);
+    });
 }
 
 /**
@@ -304,16 +370,56 @@ export function releaseSyncSockets(
     return closed;
 }
 
+/** Release exact socket ownership and observe CLOSED, never merely CLOSING. */
+export function closeSyncSockets(
+    sockets: readonly TrackedSyncSocket[],
+    mod: SyncSocketWasmModule | null,
+    timeoutMs: number,
+): Promise<LatticeCloseResult['transport']> {
+    if (sockets.length === 0) return Promise.resolve('unavailable');
+    const exclusive = sockets.filter(socket => (socketOwners.get(socket) ?? 1) <= 1);
+    if (exclusive.length === 0) {
+        releaseSyncSockets(sockets, mod);
+        return Promise.resolve('shared');
+    }
+    return new Promise(resolve => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const cleanups: Array<() => void> = [];
+        const completed = new Set<TrackedSyncSocket>();
+        const finish = (result: LatticeCloseResult['transport']) => {
+            if (settled) return;
+            settled = true;
+            if (timer !== undefined) clearTimeout(timer);
+            for (const cleanup of cleanups) { try { cleanup(); } catch { /* Waiting is already settled. */ } }
+            resolve(result);
+        };
+        const check = () => {
+            if (exclusive.every(socket => socket.readyState === CLOSED)) finish('closed');
+        };
+        for (const socket of exclusive) {
+            const closed = () => {
+                // A close event itself is terminal, including test transports
+                // which update readyState immediately after dispatch.
+                completed.add(socket);
+                if (exclusive.every(value => completed.has(value) || value.readyState === CLOSED)) finish('closed');
+            };
+            socket.addEventListener?.('close', closed);
+            cleanups.push(() => socket.removeEventListener('close', closed));
+        }
+        releaseSyncSockets(sockets, mod);
+        check();
+        if (!settled) timer = setTimeout(() => finish('timeout'), timeoutMs);
+    });
+}
+
 /**
  * Resolve once one of `sockets` is OPEN, or `false` if none opens within
  * `timeoutMs` (or there is nothing to wait for).
  *
  * Used by `resumePendingFrom`: rescued writes may only be offered to a store
- * whose transport can actually ship them, and "the socket is open" is the one
- * connection signal that is per-INSTANCE. `Lattice.onSyncState` cannot serve
- * here — `Module._dispatchSyncState` is module-global and carries no socket
- * identity, so with two synced lattices open a listener hears the OTHER one's
- * handshake. These sockets are the ones this instance captured at construction.
+ * whose exact transport can actually ship them. A rejected injected sleep
+ * cancels the wait and detaches its listeners when the owner retires.
  *
  * Listener-based, with the already-open case handled synchronously and a
  * fallback poll for a stub socket without `addEventListener`. No SharedWorker,
@@ -352,11 +458,13 @@ export function whenSyncSocketOpen(
         // the readyState check above and the listener attaching.
         const deadline = Date.now() + timeoutMs;
         void (async () => {
-            while (!settled) {
-                if (sockets.some((s) => s.readyState === OPEN)) return finish(true);
-                if (Date.now() >= deadline) return finish(false);
-                await sleep(50);
-            }
+            try {
+                while (!settled) {
+                    if (sockets.some((s) => s.readyState === OPEN)) return finish(true);
+                    if (Date.now() >= deadline) return finish(false);
+                    await sleep(50);
+                }
+            } catch { finish(false); }
         })();
     });
 }

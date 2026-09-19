@@ -1,6 +1,6 @@
 {
   "name": "@jsflax/lattice",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Lattice ORM for JavaScript/TypeScript with WebAssembly",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "vite --open /test/browser/index.html",
-    "clean": "rm -rf dist wasm/build"
+    "clean": "rm -rf dist wasm/build",
+    "test:wasm-lifecycle": "node test/wasm-lifecycle.mjs"
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.28.0",

@@ -40,8 +40,14 @@ const todos = await lattice.objects(Todo)
 ## Installation
 
 ```bash
-npm install @jsflax/lattice reflect-metadata
+npm install --save-exact https://github.com/jsflax/LatticeJS/releases/download/v1.1.0/jsflax-lattice-1.1.0.tgz reflect-metadata
 ```
+
+Install the built release archive: it includes the compiled JavaScript,
+TypeScript declarations, and matching WASM assets. Commit the resulting lockfile.
+GitHub's automatic source archives and Git dependencies do not contain these
+build outputs. This release is distributed through GitHub rather than the npm
+registry.
 
 Add `reflect-metadata` to your entry point:
 
@@ -63,12 +69,10 @@ export default defineConfig({
 });
 ```
 
-WASM threading requires these headers (the Vite dev server sets them automatically):
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
+This build runs WASM on the main thread and does not require `SharedArrayBuffer`
+or cross-origin isolation headers. The plugin preserves class names; it does not
+configure response headers. Configure any headers required by other parts of your
+application in your own server or deployment.
 
 ## Defining Models
 
@@ -422,15 +426,89 @@ lattice.updateSyncFilter([
 lattice.clearSyncFilter();
 ```
 
+### Per-instance connection lifecycle
+
+Register during `open` to observe startup, or subscribe later to receive the
+current immutable state immediately:
+
+```typescript
+const lattice = await Lattice.open('myapp', [Todo], {
+    sync: { websocketUrl, authToken },
+    onSyncState(info) {
+        console.log(info.instanceId, info.connectionGeneration, info.state,
+                    info.code, info.reason);
+    },
+});
+const unsubscribe = lattice.onSyncState(info => updateConnectionBadge(info.state));
+unsubscribe(); // Idempotent; removes only this registration.
+
+const result = await lattice.close({
+    uploadTimeoutMs: 1000, // Optional; default 0 means no upload drain requested.
+    transportTimeoutMs: 2000,
+    snapshotTimeoutMs: 2000,
+});
+console.log(result.native, result.transport, result.uploads, result.snapshot);
+```
+
+Each opened wrapper has its own `instanceId`, including wrappers sharing native
+storage. A configured connection begins at generation **1**, in `connecting`,
+before native construction. An unconfigured instance reports `closed`, generation
+**0**, reason `sync-not-configured`. A native replacement socket advances the
+generation even if its state is unchanged; a late first socket remains generation
+1. Events from the retired socket are ignored. Two stores using the same endpoint
+are distinguished by the actual native socket object, never by their URL.
+
+`Lattice.open()` returns the local store before the handshake or catch-up finishes.
+`state: 'open'` means the browser WebSocket opened. It does **not** certify server
+catch-up, a durable snapshot, or delivery of local writes. A browser error may be followed
+by `closed`; rejected handshakes commonly expose code 1006 without the HTTP status.
+No heartbeat or bounded outage-detection timer is added. The app owns retry policy,
+authentication refresh, and the close/reopen sequence; the library does not redial.
+`onSyncState(null)` clears only this instance's registrations.
+
+`close()` immediately retires this instance's state, row, audit, and progress
+callbacks and cancels its background resume waits. Native teardown starts on a
+later browser task, so closing from a callback cannot destroy its active C++ call
+stack. Repeated calls return the same promise and result; the first options win.
+An already-running callback can finish, but no further callback begins after
+retirement. This wrapper must not be used for further database operations. Finish application
+write callbacks and other application-owned asynchronous work before closing;
+close does not join arbitrary application promises or commit unfinished writes.
+
+Close reports independent outcomes:
+
+| Field | Outcomes and meaning |
+| --- | --- |
+| `native` | `closed`: handle storage released; `shared`: another owner retains storage; `pending`: cleanup awaits an active save/native callback; `unsupported`: older WASM cannot establish cleanup; `error`: cleanup failed. |
+| `transport` | `closed`: actual browser CLOSED observed; `shared`: another native owner keeps the transport; `timeout`: CLOSED was not observed by the deadline; `not-configured`; `unavailable`. |
+| `uploads` | `drained`: authoritative unshipped count reached zero; `timeout`: rows remain at the deadline; `not-requested` (default); `unavailable`: no supported count/request capability or count failed. |
+| `snapshot` | `saved`: final OPFS write closed successfully; `timeout`; `unavailable`: OPFS/snapshot unavailable; `not-persistent`; `error`. |
+
+Each timeout accepts finite milliseconds from 0 through 30000. Upload waiting
+happens first; transport and snapshot waits then overlap. These are cooperative
+bounds: browser task scheduling and synchronous native work cannot be preempted.
+A snapshot timeout retains native storage until that save settles, and the returned
+`pending` result remains unchanged. If that save never settles, the retained
+storage cannot be reclaimed by this close. Shared owners remain active and may
+continue writing. `uploads: drained` does not certify a remote fsync or durable
+snapshot beyond the existing server ACK contract.
+
+Full cleanup, exact native handoff tracking, and native progress unsubscription
+require the matching rebuilt WASM assets. Older assets get only a conservative
+fresh-socket attribution fallback and report `native: unsupported`; cached legacy
+transports cannot be safely adopted by URL. On old assets a progress disposer stops
+JS delivery but cannot remove its native registration. This API adds no socket
+admission cap or inbound/outbound queue byte limit.
+
 ### Rescuing Orphaned Writes
 
 Browser builds never redial: when the sync socket dies, the store keeps
 accepting writes and journalling them for an uploader whose transport is gone.
 Detecting the death is app-side and never instantaneous, so a write can land in
-a store that can no longer ship it. Apps recover by reopening under a **fresh
-store name** -- which starts empty, catches up from the server, and therefore
-never contains those stranded writes. `close()` cannot help either: the socket
-is already dead.
+a store that can no longer ship it. If an app recovers by reopening under a
+**fresh store name**, that store starts empty and catches up from the server,
+so it does not contain those stranded writes. An opt-in close drain cannot
+deliver through an already-dead socket.
 
 Point the new store at the one it replaces and those writes are re-offered on
 the live socket:
@@ -719,7 +797,8 @@ async function removeTodo(todo: Todo) {
 | `onSyncProgress(callback)` | Monitor sync upload/download progress. Returns unsubscribe function. |
 | `updateSyncFilter(filters)` | Limit which tables/rows sync. |
 | `clearSyncFilter()` | Sync everything. |
-| `close()` | Close the database and clean up. |
+| `close(options?)` | Retire callbacks and return explicit native, transport, upload, and snapshot outcomes. |
+| `onSyncState(callback)` | Subscribe to this instance with immediate current-state replay; returns unsubscribe. |
 
 ### `Results<T>`
 

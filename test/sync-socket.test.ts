@@ -13,7 +13,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
     installSyncSocketTracker,
     captureSyncSockets,
-    adoptSyncSocket,
     claimSyncSockets,
     releaseSyncSockets,
     liveSyncSocketCount,
@@ -222,9 +221,9 @@ describe('sync socket teardown', () => {
 
         const { sockets: none } = captureSyncSockets(() => undefined);
         expect(none).toHaveLength(0);
-        const inherited = adoptSyncSocket(URL);
-        expect(inherited).toBe(sock);
-        claimSyncSockets([inherited!]);
+        // getSyncSocket() returns the exact object for the shared native owner.
+        const inherited = sock;
+        claimSyncSockets([inherited]);
 
         expect(releaseSyncSockets(first, mod)).toBe(0);
         expect(sock.readyState).toBe(OPEN);
@@ -248,12 +247,6 @@ describe('sync socket teardown', () => {
 
         expect(releaseSyncSockets(sockets, mod)).toBe(0);
         expect(sock.closeCalls).toHaveLength(0);
-    });
-
-    it('never adopts a socket that is already closing or closed', () => {
-        const { value: sock } = captureSyncSockets(() => wasmConnect(scope, mod, URL, 0xaa));
-        sock.readyState = CLOSING;
-        expect(adoptSyncSocket(URL)).toBeNull();
     });
 
     it('a redial loop replaces sockets instead of accumulating them', () => {

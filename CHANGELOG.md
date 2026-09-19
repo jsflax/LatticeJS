@@ -1,3 +1,22 @@
+## [1.1.0] - 2026-09-19
+
+- Add instance-scoped sync lifecycle subscriptions, immutable instance and
+  connection identities, pre-start registration and true unsubscribe.
+- Report explicit native, transport, upload and persistence outcomes from close.
+  Retire callbacks immediately, cancel queued native work, preserve shared
+  owners, and retain storage while an outstanding persistent save finishes.
+- Balance native database and managed-object references. Safely retire queued
+  table, object, audit and progress callbacks, including self-unsubscribe and
+  reentrant destruction.
+- Share concurrent first-load WASM initialization and cancel background resume
+  work when its owner closes. Preserve full-replica and read-only audit behavior.
+- Rebuild with the scheduler-aware Core transport factory. Consumers must use
+  the matching generated JavaScript/WASM pair; older generated assets do not
+  gain these capabilities from TypeScript alone. No schema or wire change.
+- Add actual rebuilt-WASM lifecycle regressions alongside the JavaScript suite.
+  Browser recovery still requires application-owned fresh authorization and
+  replacement; opening a socket does not certify catch-up completion.
+
 ## Unreleased — orphaned-write drain fix round
 
 - **Read-only audit open** (arity-3 `Lattice` constructor → `create_dynamic`): reading an
