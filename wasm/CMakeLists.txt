@@ -17,6 +17,8 @@ if(EMSCRIPTEN)
     add_link_options(
         -lembind
         -fexceptions
+        # Support browser policies that allow WASM but disallow JavaScript eval.
+        -sDYNAMIC_EXECUTION=0
         -sALLOW_MEMORY_GROWTH=1
         # The database lives in the WASM heap (MEMFS), and catch-up replays
         # the channel's whole audit log through it. Measured on a real
