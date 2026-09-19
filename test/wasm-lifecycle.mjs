@@ -173,6 +173,31 @@ function addRows(db, names) {
     return ids;
 }
 function count(db) { return Number(db.count(table, null, null, null)); }
+function assertAuditRowsMatchStorage(db, observed) {
+    const stored = JSON.parse(db.eventsAfter(''));
+    const storedCount = Number(db.debugQueryCount('SELECT id FROM AuditLog'));
+    assert.equal(stored.length, storedCount, 'Stored audit enumeration omitted rows');
+    assert.equal(observed.length, storedCount,
+        `Audit payload must contain each stored row once; observed IDs=${observed.map(entry => entry.id)}, stored IDs=${stored.map(entry => entry.id)}`);
+    assert.equal(new Set(observed.map(entry => entry.globalId)).size, storedCount,
+        'Audit payload repeated a stored globalId');
+    // eventsAfter's legacy query does not preserve numeric timestamps as text.
+    // Compare all other serialized fields exactly, and check the observation's
+    // timestamp against the actual SQLite value separately.
+    const withoutTimestamp = ({ timestamp, ...entry }) => entry;
+    assert.deepEqual(observed.map(withoutTimestamp), stored.map(withoutTimestamp),
+        'Audit payload differs from stored identity, order, operation, fields or provenance');
+    for (const entry of observed) {
+        assert.ok(Number.isSafeInteger(entry.id) && entry.id > 0);
+        assert.equal(typeof entry.timestamp, 'string');
+        assert.match(entry.timestamp, /^[0-9.eE+-]+$/);
+        assert.ok(Number.isFinite(Number(entry.timestamp)) && Number(entry.timestamp) > 0);
+        assert.equal(Number(db.debugQueryCount(
+            `SELECT id FROM AuditLog WHERE id=${entry.id} AND CAST(timestamp AS TEXT)='${entry.timestamp}'`)), 1,
+        'Observed timestamp does not match its stored audit row');
+    }
+    return stored;
+}
 async function baselineAgain(label) {
     await turns();
     await until(() => keys.every(key => diag()[key] === baseline[key]), `${label} native resources return to baseline`);
@@ -529,6 +554,68 @@ try {
         dispose(db);
         return { wrappersCreatedAndDeleted: 5, diagnosticsAfterOwnerClose: diag() };
     });
+
+    for (const memory of [true, false]) {
+        await test(`AuditLog ${memory ? 'memory' : 'named-file'} transaction emits every stored row exactly once`, async () => {
+            const db = open(memory ? ':memory:' : newPath('audit-exact'));
+            assert.equal(Number(db.debugQueryCount(
+                `SELECT name FROM pragma_database_list WHERE name='main' AND file ${memory ? '=' : '<>'} ''`)), 1,
+            'The test is not using its claimed SQLite backend');
+            const observed = [];
+            const subscription = db.observeAuditLog(json => observed.push(...JSON.parse(json)));
+            const insertedName = 'insert α "quoted"';
+            const updatedName = 'update β "quoted"';
+            let object;
+            db.beginWrite();
+            const row = db.add(table, { name: insertedName, rank: 42 });
+            try {
+                object = db.findObject(table, row);
+                object.setString('name', updatedName);
+                assert.equal(db.remove(table, row), true);
+            } finally { object?.delete(); }
+            db.commitWrite();
+            await until(() => observed.length > 0, 'transaction audit delivery');
+            await turns();
+            const stored = assertAuditRowsMatchStorage(db, observed);
+            assert.equal(stored.length, 3, 'Fixture must persist INSERT, UPDATE and DELETE');
+            assert.deepEqual(observed.map(entry => entry.operation), ['INSERT', 'UPDATE', 'DELETE']);
+            assert.deepEqual(observed.map(entry => entry.changedFields.name.value),
+                [insertedName, updatedName, updatedName]);
+            assert.ok(observed.every(entry => entry.tableName === table && Number(entry.rowId) === Number(row)));
+            db.removeAuditLogObserver(subscription);
+            dispose(db);
+            return { backend: memory ? 'SQLite memory' : 'SQLite named file in MEMFS', storedRows: stored.length, observedRows: observed.length };
+        });
+    }
+
+    await test('AuditLog named-file link changes emit every model and junction row exactly once', async () => {
+        const linkSchema = [{ ...schema[0], properties: [...schema[0].properties,
+            { name: 'children', type: 'object', kind: 'list', targetTable: table },
+        ] }];
+        const db = new module.Lattice(newPath('audit-links'), linkSchema);
+        handles.add(db);
+        const observed = [];
+        const subscription = db.observeAuditLog(json => observed.push(...JSON.parse(json)));
+        const [parentId, childId] = addRows(db, ['parent', 'child']);
+        const parent = db.findObject(table, parentId);
+        const child = db.findObject(table, childId);
+        const list = parent.getLinkList('children');
+        try {
+            assert.equal(list.isValid(), true);
+            list.push_back(child);
+            assert.equal(Number(list.size()), 1);
+        } finally {
+            list.delete(); child.delete(); parent.delete();
+        }
+        await until(() => observed.length > 0, 'link audit delivery');
+        await turns();
+        const stored = assertAuditRowsMatchStorage(db, observed);
+        assert.ok(stored.length > 2, 'Fixture did not persist a junction audit row');
+        assert.ok(observed.some(entry => entry.tableName.startsWith('_') && entry.operation === 'INSERT'));
+        db.removeAuditLogObserver(subscription);
+        dispose(db);
+        return { storedRows: stored.length, observedRows: observed.length, includesJunctionInsert: true };
+    });
 } catch (error) {
     failure = error?.stack ?? String(error);
 } finally {
@@ -541,7 +628,7 @@ try {
     process.off('uncaughtException', onAsyncError);
     process.off('unhandledRejection', onAsyncError);
     Object.assign(console, oldConsole);
-    const passed = !failure && asyncErrors.length === 0 && fatalLogs.length === 0 && reports.length === 13 && reports.every(test => test.passed);
+    const passed = !failure && asyncErrors.length === 0 && fatalLogs.length === 0 && reports.length === 16 && reports.every(test => test.passed);
     const result = {
         passed, scope, receipt, baseline, final: diag(), elapsedMs: performance.now() - started,
         tests: reports, failure, asyncErrors, fatalLogs,
