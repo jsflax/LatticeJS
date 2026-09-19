@@ -1,5 +1,5 @@
 // Main Lattice class - user-facing API
-import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges } from './types';
+import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
@@ -7,10 +7,11 @@ import { safeRandomUUID } from './uuid';
 import {
     installSyncSocketTracker,
     captureSyncSockets,
-    adoptSyncSocket,
     claimSyncSockets,
-    releaseSyncSockets,
-    whenSyncSocketOpen,
+    closeSyncSockets,
+    forgetSyncSockets,
+    waitForSyncSocketsClosed,
+    InstanceSyncState,
     type TrackedSyncSocket,
 } from './sync-socket';
 import {
@@ -77,6 +78,7 @@ export enum LogLevel {
 
 // Global WASM module cache
 let wasmModule: any = null;
+let wasmInitialization: Promise<any> | null = null;
 
 /** How long `resumePendingFrom` waits for the new store's socket to open. */
 const RESUME_CONNECT_TIMEOUT_MS = 20000;
@@ -109,7 +111,7 @@ export class Lattice {
      *  persists a lucky early snapshot — every refresh then re-downloads
      *  the world (found live: "BindingError: Cannot pass deleted object"
      *  from the un-retired initial-save timer firing after close). */
-    private persistentFinalFlush: (() => Promise<void>) | null = null;
+    private persistentFinalFlush: (() => Promise<'saved' | 'unavailable' | 'error'>) | null = null;
     /** The sync WebSocket(s) this instance holds — see ./sync-socket. Empty
      *  when sync is not configured. */
     private syncSockets: TrackedSyncSocket[] = [];
@@ -117,12 +119,19 @@ export class Lattice {
     private modelMap: Map<string, ModelConstructor>;
 
     private syncObserverId: (() => void) | null = null;
-    private instanceId: string = safeRandomUUID();
+    private closing = false;
+    private socketWatchId: number | null = null;
+    private readonly stopWaits = new Set<() => void>();
+    private closePromise: Promise<LatticeCloseResult> | null = null;
+    private nativeCleanupResult: LatticeCloseResult['native'] | null = null;
+    private readonly observerDisposers = new Set<() => void>();
 
     private constructor(
         db: LatticeWasm,
         schemas: SchemaEntry[],
-        modelMap: Map<string, ModelConstructor>
+        modelMap: Map<string, ModelConstructor>,
+        private readonly syncState: InstanceSyncState,
+        private readonly syncConfigured: boolean,
     ) {
         this.db = db;
         this.schemas = schemas;
@@ -143,18 +152,19 @@ export class Lattice {
      * here so a storage-only read can be the FIRST thing a page does.
      */
     private static async ensureWasm(): Promise<any> {
-        if (!wasmModule) {
-            const module = await import(/* @vite-ignore */ wasmJsUrl);
-            wasmModule = await module.default({
-                locateFile: (p: string) => {
-                    if (p.endsWith('.wasm')) return wasmBinaryUrl;
-                    return p;
-                }
-            });
-            // Make WASM available for model instances
-            setWasmModule(wasmModule);
+        if (wasmModule) return wasmModule;
+        if (!wasmInitialization) {
+            wasmInitialization = (async () => {
+                const module = await import(/* @vite-ignore */ wasmJsUrl);
+                const loaded = await module.default({
+                    locateFile: (p: string) => p.endsWith('.wasm') ? wasmBinaryUrl : p,
+                });
+                setWasmModule(loaded);
+                wasmModule = loaded;
+                return loaded;
+            })().catch(error => { wasmInitialization = null; throw error; });
         }
-        return wasmModule;
+        return wasmInitialization;
     }
 
     /**
@@ -166,55 +176,53 @@ export class Lattice {
         wasmModule._lattice_set_log_level(level);
     }
 
-    /**
-     * Build the wasm instance and take ownership of whatever sync socket it
-     * opened.
-     *
-     * The socket is created wasm-side, synchronously inside the C++
-     * constructor (`setup_sync_if_configured` -> `synchronizer::connect` ->
-     * `new WebSocket(...)` through `val::global`), so the capture window
-     * around `make()` attributes it exactly. Two outcomes are both normal:
-     *
-     * - one socket captured: this instance built a fresh `swift_lattice` and
-     *   owns its transport;
-     * - none captured: `LatticeCache::get_or_create` returned a CACHED
-     *   `swift_lattice` for this path+url+schema, so this instance inherits a
-     *   sibling's live transport. Adopt it under refcount — closing it when
-     *   only one of the two holders goes away would cut sync out from under
-     *   the other.
-     *
-     * @see ./sync-socket for why close() has to do this from JS at all.
-     */
-    private static constructWithSyncSocket(
+    /** Construct with exact native transport identity; legacy capture never matches by URL. */
+    private static async constructWithSyncSocket(
         syncUrl: string | undefined,
-        make: () => LatticeWasm
-    ): { db: LatticeWasm; sockets: TrackedSyncSocket[] } {
-        if (!syncUrl) return { db: make(), sockets: [] };
-
-        installSyncSocketTracker();
-        const { value: db, sockets } = captureSyncSockets(make);
-
-        let owned = sockets;
-        if (owned.length === 0) {
-            const inherited = adoptSyncSocket(syncUrl);
-            if (inherited) {
-                owned = [inherited];
-            } else {
-                // No new socket and nothing live to inherit. Either the wasm
-                // reused a cached instance whose transport a previous close()
-                // already tore down (it cannot redial — schedule_reconnect is
-                // compiled out on Emscripten), or the tracker was installed
-                // too late. Both are silent-no-sync states, so say so.
-                console.warn(
-                    '[Lattice] sync configured but no live sync socket for',
-                    syncUrl,
-                    '— this open reused a wasm instance with no usable transport;',
-                    'reload the page to redial.'
-                );
-            }
+        make: () => LatticeWasm,
+        state: InstanceSyncState,
+    ): Promise<{ db: LatticeWasm; sockets: TrackedSyncSocket[] }> {
+        const modern = typeof wasmModule?.Lattice?.prototype?.getSyncSocket === 'function' &&
+            typeof wasmModule?.Lattice?.prototype?.prepareClose === 'function';
+        if (syncUrl && !modern) installSyncSocketTracker();
+        const { value: db, sockets: captured } = modern ? { value: make(), sockets: [] } : captureSyncSockets(make);
+        let sockets: TrackedSyncSocket[] = [];
+        try {
+            const exact = !syncUrl ? null : typeof db.getSyncSocket === 'function' ? db.getSyncSocket() :
+                captured.length === 1 ? captured[0] : null;
+            sockets = exact ? [exact] : [];
+            claimSyncSockets(sockets);
+            state.bind(exact);
+            return { db, sockets };
+        } catch (error) {
+            // A post-construction getter/listener failure must not leak the handle.
+            state.fail(); state.retire();
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            forgetSyncSockets(sockets);
+            try { db.prepareClose?.(); } catch { /* Release is still attempted. */ }
+            try { db.releaseStorage?.(); } catch { /* Delete is still attempted. */ }
+            try { (db as unknown as { delete?: () => void }).delete?.(); } catch { /* Preserve the original error. */ }
+            throw error;
         }
-        claimSyncSockets(owned);
-        return { db, sockets: owned };
+    }
+
+    private startSyncSocketWatch(): void {
+        if (!this.syncConfigured || typeof this.db.watchSyncSocket !== 'function') return;
+        try {
+            this.socketWatchId = this.db.watchSyncSocket(socket => {
+                if (this.closing) return;
+                if (socket === (this.syncSockets[0] ?? null)) return;
+                // A native handoff, not JS lease counts, determines old transport
+                // closure. Late watcher delivery cannot close a sibling's socket.
+                forgetSyncSockets(this.syncSockets);
+                this.syncSockets = socket ? [socket] : [];
+                claimSyncSockets(this.syncSockets);
+                this.syncState.bind(socket);
+            });
+        } catch (error) {
+            void this.close();
+            throw error;
+        }
     }
 
     /**
@@ -228,6 +236,8 @@ export class Lattice {
         path: string,
         models: ModelConstructor[],
         options?: {
+            /** Installed before transport construction; events belong to this instance. */
+            onSyncState?: (info: SyncStateInfo) => void;
             sync?: {
                 websocketUrl: string;
                 authToken?: string;
@@ -268,78 +278,86 @@ export class Lattice {
             }
         }
 
-        // Load WASM module if not already loaded (needed for main thread)
-        await Lattice.ensureWasm();
+        const state = new InstanceSyncState(safeRandomUUID(), !!options?.sync?.websocketUrl);
+        if (options?.onSyncState) state.subscribe(options.onSyncState);
+        try {
+            // Load WASM module if not already loaded (needed for main thread)
+            await Lattice.ensureWasm();
 
-        const isInMemory = path === ':memory:' || path.startsWith(':memory:');
-        const syncConfig = options?.sync;
-        const schemaVersion = options?.schemaVersion;
-        const migrationFn = options?.migration;
-        let lattice: Lattice;
+            const isInMemory = path === ':memory:' || path.startsWith(':memory:');
+            const syncConfig = options?.sync;
+            const schemaVersion = options?.schemaVersion;
+            const migrationFn = options?.migration;
+            let lattice: Lattice;
 
-        if (isInMemory) {
-            // In-memory: just use main thread
-            console.log('[Lattice] Creating in-memory database');
-            const makeDb = (): LatticeWasm => {
-                if (schemaVersion && migrationFn) {
-                    // Migration-aware constructor
-                    const jsMigrationCallback = (ctx: any) => {
-                        const migrationCtx: MigrationContext = {
-                            pendingChanges: () => ctx.pendingChanges as TableChanges[],
-                            hasChangesFor: (tableName: string) => {
-                                return (ctx.pendingChanges as TableChanges[]).some(
-                                    (c: TableChanges) => c.tableName === tableName &&
-                                        (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
-                                );
-                            },
-                            renameProperty: (tableName: string, oldName: string, newName: string) => {
-                                // Call C++ via the context pointer
-                                wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
-                            },
-                            deleteAll: (tableName: string) => {
-                                wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
-                            },
-                            executeSql: (sql: string) => {
-                                wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
-                            },
-                            enumerateObjects: () => {
-                                // Complex operation — not exposed in initial version
-                                console.warn('enumerateObjects not yet supported in WASM migrations');
-                            },
+            if (isInMemory) {
+                // In-memory: just use main thread
+                console.log('[Lattice] Creating in-memory database');
+                const makeDb = (): LatticeWasm => {
+                    if (schemaVersion && migrationFn) {
+                        // Migration-aware constructor
+                        const jsMigrationCallback = (ctx: any) => {
+                            const migrationCtx: MigrationContext = {
+                                pendingChanges: () => ctx.pendingChanges as TableChanges[],
+                                hasChangesFor: (tableName: string) => {
+                                    return (ctx.pendingChanges as TableChanges[]).some(
+                                        (c: TableChanges) => c.tableName === tableName &&
+                                            (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
+                                    );
+                                },
+                                renameProperty: (tableName: string, oldName: string, newName: string) => {
+                                    // Call C++ via the context pointer
+                                    wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
+                                },
+                                deleteAll: (tableName: string) => {
+                                    wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
+                                },
+                                executeSql: (sql: string) => {
+                                    wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
+                                },
+                                enumerateObjects: () => {
+                                    // Complex operation — not exposed in initial version
+                                    console.warn('enumerateObjects not yet supported in WASM migrations');
+                                },
+                            };
+                            migrationFn(migrationCtx);
                         };
-                        migrationFn(migrationCtx);
-                    };
-                    return new wasmModule.Lattice(
-                        path, schemas,
-                        syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
-                        schemaVersion, jsMigrationCallback
-                    );
-                } else if (syncConfig?.websocketUrl) {
-                    console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-                    return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-                } else {
-                    return new wasmModule.Lattice(path, schemas);
-                }
-            };
-            const { db, sockets } = Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb);
-            lattice = new Lattice(db, schemas, modelMap);
-            lattice.syncSockets = sockets;
-        } else {
-            // Persistent: same main-thread wasm, snapshotted to and restored
-            // from OPFS. See openPersistent.
-            lattice = await Lattice.openPersistent(path, schemas, modelMap, syncConfig);
-        }
+                        return new wasmModule.Lattice(
+                            path, schemas,
+                            syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
+                            schemaVersion, jsMigrationCallback
+                        );
+                    } else if (syncConfig?.websocketUrl) {
+                        console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
+                        return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
+                    } else {
+                        return new wasmModule.Lattice(path, schemas);
+                    }
+                };
+                const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb, state);
+                lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
+                lattice.syncSockets = sockets;
+                lattice.startSyncSocketWatch();
+            } else {
+                // Persistent: same main-thread wasm, snapshotted to and restored
+                // from OPFS. See openPersistent.
+                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig);
+            }
 
-        // Rescue whatever the store this one replaces never managed to upload.
-        // Scheduled, never awaited: open() must not wait on a handshake.
-        if (options?.resumePendingFrom) {
-            lattice.scheduleResumeDrain(
-                options.resumePendingFrom,
-                !!syncConfig?.websocketUrl,
-                options.onResumePending,
-            );
+            // Rescue whatever the store this one replaces never managed to upload.
+            // Scheduled, never awaited: open() must not wait on a handshake.
+            if (options?.resumePendingFrom) {
+                lattice.scheduleResumeDrain(
+                    options.resumePendingFrom,
+                    !!syncConfig?.websocketUrl,
+                    options.onResumePending,
+                );
+            }
+            return lattice;
+        } catch (error) {
+            state.fail(); state.retire();
+            throw error;
         }
-        return lattice;
     }
 
     /**
@@ -359,6 +377,7 @@ export class Lattice {
         path: string,
         schemas: SchemaEntry[],
         modelMap: Map<string, ModelConstructor>,
+        state: InstanceSyncState,
         syncConfig?: { websocketUrl: string; authToken?: string }
     ): Promise<Lattice> {
         console.log('[Lattice] Opening persistent database:', path);
@@ -370,133 +389,141 @@ export class Lattice {
         }
 
         // Open with named path (MEMFS) + sync
-        const { db, sockets } = Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, () => {
+        const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, () => {
             if (syncConfig?.websocketUrl) {
                 console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
                 return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
             }
             return new wasmModule.Lattice(path, schemas);
-        });
-        const lattice = new Lattice(db, schemas, modelMap);
+        }, state);
+        const lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
         lattice.syncSockets = sockets;
+        try {
+            lattice.startSyncSocketWatch();
 
-        // Set up periodic OPFS snapshot saves (every 15s when dirty)
-        let snapshotDirty = false;
-        let snapshotInFlight = false;
-        const flushSnapshot = async () => {
-            if (!snapshotDirty || snapshotInFlight) return;
-            snapshotInFlight = true;
-            snapshotDirty = false;
-            try {
-                await Lattice.saveSnapshot(path, db);
-            } catch (err) {
-                // A failed save must re-arm — otherwise this dirty window is
-                // silently lost until the NEXT write, and a tab closed in
-                // between re-downloads everything.
-                snapshotDirty = true;
-                console.warn('[Lattice] OPFS snapshot save failed:', err);
-            } finally {
-                snapshotInFlight = false;
-            }
-        };
-        const snapshotTimer = setInterval(flushSnapshot, 15000);
+            // Set up periodic OPFS snapshot saves (every 15s when dirty)
+            let snapshotDirty = false;
+            let snapshotInFlight = false;
+            let initialSaveTimer: ReturnType<typeof setTimeout> | null = null;
+            const flushSnapshot = async () => {
+                if (!snapshotDirty || snapshotInFlight) return;
+                snapshotInFlight = true;
+                snapshotDirty = false;
+                try {
+                    const outcome = await Lattice.saveSnapshot(path, db);
+                    if (outcome === 'error') snapshotDirty = true;
+                } catch (err) {
+                    // A failed save must re-arm — otherwise this dirty window is
+                    // silently lost until the NEXT write, and a tab closed in
+                    // between re-downloads everything.
+                    snapshotDirty = true;
+                    console.warn('[Lattice] OPFS snapshot save failed:', err);
+                } finally {
+                    snapshotInFlight = false;
+                }
+            };
+            const snapshotTimer = setInterval(flushSnapshot, 15000);
 
-        // The 15s timer alone loses up to 15s of applied entries when the
-        // tab closes — including the resume cursor they carry, so the next
-        // load re-downloads everything since the last lucky tick. Flush on
-        // the page-lifecycle edges instead of hoping the timer fired:
-        // pagehide is the last reliable signal on close/navigate, and
-        // visibilitychange→hidden covers tab-switch-then-kill (mobile
-        // Safari never fires pagehide in that order). Best-effort — the
-        // async OPFS write gets a head start it wouldn't otherwise have,
-        // and a write the teardown truncates is SAFE: createWritable() is
-        // swap-on-close, so until close() succeeds the previous snapshot
-        // remains untouched. Worst case is the old behavior (stale
-        // snapshot, larger delta), never a corrupt one.
-        const onVisibility = () => {
-            if (document.visibilityState === 'hidden') void flushSnapshot();
-        };
-        const onPagehide = () => { void flushSnapshot(); };
-        if (typeof document !== 'undefined') {
-            document.addEventListener('visibilitychange', onVisibility);
-        }
-        if (typeof window !== 'undefined') {
-            window.addEventListener('pagehide', onPagehide);
-        }
+            // The 15s timer alone loses up to 15s of applied entries when the
+            // tab closes — including the resume cursor they carry, so the next
+            // load re-downloads everything since the last lucky tick. Flush on
+            // the page-lifecycle edges instead of hoping the timer fired:
+            // pagehide is the last reliable signal on close/navigate, and
+            // visibilitychange→hidden covers tab-switch-then-kill (mobile
+            // Safari never fires pagehide in that order). Best-effort — the
+            // async OPFS write gets a head start it wouldn't otherwise have,
+            // and a write the teardown truncates is SAFE: createWritable() is
+            // swap-on-close, so until close() succeeds the previous snapshot
+            // remains untouched. Worst case is the old behavior (stale
+            // snapshot, larger delta), never a corrupt one.
+            const onVisibility = () => {
+                if (document.visibilityState === 'hidden') void flushSnapshot();
+            };
+            const onPagehide = () => { void flushSnapshot(); };
 
-        // close() must be able to retire all of this — reopen loops (the
-        // embed's reconnect controller) would otherwise accumulate a timer,
-        // two listeners, and a live wasm sqlite handle per cycle. NOTE the
-        // initial-save timer is retired here too: it holds `db` in its
-        // closure, and firing after close() deleted the wasm object was the
-        // observed "Cannot pass deleted object as a pointer" failure that
-        // silently killed OPFS persistence for reopen-loop consumers.
-        lattice.housekeepingCleanup = () => {
-            clearInterval(snapshotTimer);
-            if (initialSaveTimer) { clearTimeout(initialSaveTimer); initialSaveTimer = null; }
+            // close() must be able to retire all of this — reopen loops (the
+            // embed's reconnect controller) would otherwise accumulate a timer,
+            // two listeners, and a live wasm sqlite handle per cycle. NOTE the
+            // initial-save timer is retired here too: it holds `db` in its
+            // closure, and firing after close() deleted the wasm object was the
+            // observed "Cannot pass deleted object as a pointer" failure that
+            // silently killed OPFS persistence for reopen-loop consumers.
+            lattice.housekeepingCleanup = () => {
+                clearInterval(snapshotTimer);
+                if (initialSaveTimer) { clearTimeout(initialSaveTimer); initialSaveTimer = null; }
+                if (typeof document !== 'undefined') {
+                    document.removeEventListener('visibilitychange', onVisibility);
+                }
+                if (typeof window !== 'undefined') {
+                    window.removeEventListener('pagehide', onPagehide);
+                }
+            };
             if (typeof document !== 'undefined') {
-                document.removeEventListener('visibilitychange', onVisibility);
+                document.addEventListener('visibilitychange', onVisibility);
             }
             if (typeof window !== 'undefined') {
-                window.removeEventListener('pagehide', onPagehide);
+                window.addEventListener('pagehide', onPagehide);
             }
-        };
-        // The close-time snapshot is the MOST valuable one — it carries the
-        // resume cursor of everything this session applied. Drain any
-        // in-flight save first (two concurrent createWritable() streams on
-        // one snapshot file would race), then take one final snapshot.
-        lattice.persistentFinalFlush = async () => {
-            while (snapshotInFlight) await new Promise((r) => setTimeout(r, 25));
-            await Lattice.saveSnapshot(path, db);
-        };
+            // The close-time snapshot is the MOST valuable one — it carries the
+            // resume cursor of everything this session applied. Drain any
+            // in-flight save first (two concurrent createWritable() streams on
+            // one snapshot file would race), then take one final snapshot.
+            lattice.persistentFinalFlush = async () => {
+                while (snapshotInFlight) await new Promise((r) => setTimeout(r, 25));
+                return Lattice.saveSnapshot(path, db);
+            };
 
-        // Mark dirty when data changes (for snapshot saves)
-        for (const [, model] of modelMap) {
-            lattice.observeTable(model, () => { snapshotDirty = true; });
+            // Mark dirty when data changes (for snapshot saves)
+            for (const [, model] of modelMap) {
+                lattice.observeTable(model, () => { snapshotDirty = true; });
+            }
+
+            // Save initial snapshot after first sync batch completes
+            // (triggers after the first burst of observer callbacks settles)
+            const scheduleInitialSave = () => {
+                if (initialSaveTimer) clearTimeout(initialSaveTimer);
+                initialSaveTimer = setTimeout(async () => {
+                    initialSaveTimer = null;
+                    snapshotDirty = true;
+                    await flushSnapshot();
+                }, 5000);
+            };
+            // The observeTable callbacks will fire as sync data arrives
+            for (const [, model] of modelMap) {
+                lattice.observeTable(model, () => {
+                    if (initialSaveTimer !== null || !restored) {
+                        // Still in initial sync phase — schedule save
+                        scheduleInitialSave();
+                    }
+                });
+            }
+
+            console.log('[Lattice] Persistent database ready');
+            return lattice;
+        } catch (error) {
+            state.fail();
+            await lattice.close();
+            throw error;
         }
-
-        // Save initial snapshot after first sync batch completes
-        // (triggers after the first burst of observer callbacks settles)
-        let initialSaveTimer: ReturnType<typeof setTimeout> | null = null;
-        const scheduleInitialSave = () => {
-            if (initialSaveTimer) clearTimeout(initialSaveTimer);
-            initialSaveTimer = setTimeout(async () => {
-                initialSaveTimer = null;
-                await Lattice.saveSnapshot(path, db);
-                console.log('[Lattice] Initial snapshot saved');
-            }, 5000);
-        };
-        // The observeTable callbacks will fire as sync data arrives
-        for (const [, model] of modelMap) {
-            lattice.observeTable(model, () => {
-                if (initialSaveTimer !== null || !restored) {
-                    // Still in initial sync phase — schedule save
-                    scheduleInitialSave();
-                }
-            });
-        }
-
-        console.log('[Lattice] Persistent database ready');
-        return lattice;
     }
 
     /**
      * Save database snapshot to OPFS (async API, works on main thread).
      */
-    private static async saveSnapshot(path: string, db: LatticeWasm): Promise<void> {
+    private static async saveSnapshot(path: string, db: LatticeWasm): Promise<'saved' | 'unavailable' | 'error'> {
         try {
-            if (!navigator?.storage?.getDirectory) return;
+            if (typeof navigator === 'undefined' || !navigator?.storage?.getDirectory) return 'unavailable';
             // A deleted wasm object throws BindingError on ANY method call —
             // a save that lost the race with close() must be a no-op, not a
             // dirty-window-eating failure.
-            if ((db as unknown as { isDeleted?: () => boolean }).isDeleted?.()) return;
+            if ((db as unknown as { isDeleted?: () => boolean }).isDeleted?.()) return 'error';
 
             // Flush WAL into main database file
             db.walCheckpoint();
 
             // Read from Emscripten MEMFS
             const data: Uint8Array = wasmModule.FS.readFile(path);
-            if (data.length === 0) return;
+            if (data.length === 0) return 'unavailable';
 
             const root = await navigator.storage.getDirectory();
             const dir = await root.getDirectoryHandle('lattice-snapshots', { create: true });
@@ -507,8 +534,10 @@ export class Lattice {
             await writable.close();
 
             console.log(`[Lattice] Snapshot saved: ${data.length} bytes`);
+            return 'saved';
         } catch (e) {
             console.warn('[Lattice] Snapshot save failed:', e);
+            return 'error';
         }
     }
 
@@ -598,6 +627,7 @@ export class Lattice {
      * @param previousPath the abandoned store. Must not be this store's path.
      */
     async drainPendingFrom(previousPath: string, options?: PendingSelectOptions): Promise<DrainReport> {
+        this.assertOpen();
         const report = emptyDrainReport();
         if (!previousPath) return report;
         if (previousPath === this.getPath()) {
@@ -618,6 +648,7 @@ export class Lattice {
 
         await Lattice.ensureWasm();
         const rows = await Lattice.readPendingAt(previousPath, options);
+        this.assertOpen();
         if (rows === null) {
             // A missing store is NOT an empty one: the caller named a path
             // that has nothing behind it (wrong name, or the snapshot is
@@ -629,9 +660,13 @@ export class Lattice {
         }
         if (rows.length === 0) return report;
 
-        const drained = await drainPendingUploads(this.db, rows, {
+        const drained = await drainPendingUploads({
+            getPendingAuditLog: () => { this.assertOpen(); return this.db.getPendingAuditLog(); },
+            applyRemoteChanges: json => { this.assertOpen(); return this.db.applyRemoteChanges(json); },
+        }, rows, {
             ...options,
             tables: this.schemas.map((s) => s.tableName),
+            sleep: ms => this.sleepWhileOpen(ms),
         });
         console.log(
             `[Lattice] drained ${drained.applied.length}/${drained.found} pending row(s) from ${previousPath}` +
@@ -720,7 +755,8 @@ export class Lattice {
         }
         void (async () => {
             try {
-                const opened = await whenSyncSocketOpen(this.syncSockets, RESUME_CONNECT_TIMEOUT_MS);
+                const opened = await this.waitForSyncOpen(RESUME_CONNECT_TIMEOUT_MS);
+                if (this.closing) return;
                 if (!opened) {
                     // Draining now would relocate the orphans into a store that
                     // also cannot ship them. Leave them where they are so the
@@ -735,11 +771,13 @@ export class Lattice {
                     quietMs: RESUME_QUIET_MS,
                     minWaitMs: RESUME_MIN_WAIT_MS,
                     maxWaitMs: RESUME_MAX_WAIT_MS,
+                    sleep: ms => this.sleepWhileOpen(ms),
                 });
+                if (this.closing) return;
                 const report = await this.drainPendingFrom(previousPath);
-                onReport?.(report);
+                if (!this.closing) onReport?.(report);
             } catch (err) {
-                console.warn('[Lattice] resumePendingFrom drain failed:', err);
+                if (!this.closing) console.warn('[Lattice] resumePendingFrom drain failed:', err);
             }
         })();
     }
@@ -930,10 +968,10 @@ export class Lattice {
         callback: (change: CollectionChange) => void
     ): () => void {
         const tableName = getTableName(modelClass);
-        const observerId = this.db.observeTable(tableName, callback);
-        return () => {
-            this.db.removeTableObserver(tableName, observerId);
-        };
+        return this.observeWhileOpen(active => {
+            const observerId = this.db.observeTable(tableName, change => { if (active()) callback(change); });
+            return () => this.db.removeTableObserver(tableName, observerId);
+        });
     }
 
     /**
@@ -951,12 +989,12 @@ export class Lattice {
         const id = (instance as any).id;
         if (!id) throw new Error('Cannot observe object without an id');
 
-        const observerId = this.db.observeObject(tableName, id, (changedFields: string) => {
-            callback(changedFields.split(',').filter(s => s.length > 0));
+        return this.observeWhileOpen(active => {
+            const observerId = this.db.observeObject(tableName, id, (changedFields: string) => {
+                if (active()) callback(changedFields.split(',').filter(s => s.length > 0));
+            });
+            return () => this.db.removeObjectObserver(tableName, id, observerId);
         });
-        return () => {
-            this.db.removeObjectObserver(tableName, id, observerId);
-        };
     }
 
     // ========================================================================
@@ -970,26 +1008,22 @@ export class Lattice {
         return this.db.getSyncProgress();
     }
 
-    /**
-     * Observe sync progress changes.
-     * @returns Unsubscribe function
+    /** Subscribe to this instance and immediately replay its current state.
+     * The idempotent disposer removes only this registration. Null clears only
+     * this instance's listeners; close retires all before any asynchronous work.
      */
-    /**
-     * Observe the sync WebSocket's lifecycle (open / closed / error).
-     * Module-global and MULTI-listener: each registration is additive (the
-     * app shell, a status pill, and a reconnect controller can all listen);
-     * pass null to clear all. Events carry no socket identity — with several
-     * synced lattices open, every listener hears every socket.
-     */
-    onSyncState(callback: ((info: import('./types').SyncStateInfo) => void) | null): void {
-        wasmModule.setSyncStateCallback(callback);
+    onSyncState(callback: ((info: SyncStateInfo) => void) | null): () => void {
+        return this.syncState.subscribe(callback);
     }
 
+    /** Observe sync progress with an idempotent disposer. Legacy WASM only retires JS delivery. */
     onSyncProgress(callback: (progress: SyncProgress) => void): () => void {
-        const observerId = this.db.onSyncProgress(callback);
-        return () => {
-            // Note: removal handled by C++ when observer is destroyed
-        };
+        return this.observeWhileOpen(active => {
+            const observerId = this.db.onSyncProgress(progress => { if (active()) callback(progress); });
+            // A legacy binding can retire delivery only. New bindings remove
+            // the native registration as well, including on a shared owner.
+            return () => this.db.removeSyncProgress?.(observerId);
+        });
     }
 
     /**
@@ -1032,9 +1066,11 @@ export class Lattice {
      * Execute a write transaction.
      */
     async write<T>(fn: () => Promise<T>): Promise<T> {
+        this.assertOpen();
         this.db.beginWrite();
         try {
             const result = await fn();
+            this.assertOpen();
             this.db.commitWrite();
             return result;
         } catch (error) {
@@ -1183,24 +1219,33 @@ export class Lattice {
      * @returns Unsubscribe function
      */
     observe(callback: (entries: AuditLogEntry[]) => void): () => void {
-        // Wrap the callback to parse JSON from C++
-        const wrappedCallback = (json: string) => {
-            try {
-                const rawEntries = JSON.parse(json);
-                const entries: AuditLogEntry[] = rawEntries.map((e: any) => this.parseAuditLogEntry(e));
-                callback(entries);
-            } catch (e) {
-                console.error('[Lattice.observe] Failed to parse audit log:', e);
-            }
-        };
+        return this.observeWhileOpen(active => {
+            const observerId = this.db.observeAuditLog((json: string) => {
+                if (!active()) return;
+                try {
+                    const rawEntries = JSON.parse(json);
+                    const entries: AuditLogEntry[] = rawEntries.map((e: any) => this.parseAuditLogEntry(e));
+                    if (active()) callback(entries);
+                } catch (error) { console.error('[Lattice.observe] Failed to parse audit log:', error); }
+            });
+            return () => this.db.removeAuditLogObserver(observerId);
+        });
+    }
 
-        // Register observer with C++
-        const observerId = this.db.observeAuditLog(wrappedCallback);
-
-        // Return unsubscribe function
-        return () => {
-            this.db.removeAuditLogObserver(observerId);
+    private observeWhileOpen(register: (active: () => boolean) => () => void): () => void {
+        if (this.closing) throw new Error('Lattice is closing.');
+        let active = true;
+        let remove = () => {};
+        const dispose = () => {
+            if (!active) return;
+            active = false;
+            this.observerDisposers.delete(dispose);
+            remove();
         };
+        this.observerDisposers.add(dispose);
+        try { remove = register(() => active && !this.closing); }
+        catch (error) { active = false; this.observerDisposers.delete(dispose); throw error; }
+        return dispose;
     }
 
     /**
@@ -1270,83 +1315,164 @@ export class Lattice {
     }
 
     /**
-     * Close the database and clean up resources: severs the sync socket,
-     * unregisters observers, retires the snapshot timer and page-lifecycle
-     * listeners, takes the final OPFS snapshot, then deletes the wasm handle.
+     * Retire callbacks immediately, then close with cooperative bounded waits.
+     * Upload drain is opt-in. A timed-out persistent save retains native storage
+     * until the save settles; it never reports native cleanup as complete.
      */
-    async close(): Promise<void> {
-        console.log('[Lattice.close] Closing database...');
-
-        // Sever the sync transport FIRST. Two reasons it leads:
-        //
-        // 1. It is the leak this method exists to stop. `db.delete()` below
-        //    does NOT reach the C++ teardown that would disconnect the socket:
-        //    no `close`/`disconnect` is registered on the embind Lattice class,
-        //    and `~JsLattice`'s `releaseSwiftLatticeRef` underflows a refcount
-        //    that wasm/bindings.cpp never retained, so `~lattice_db` — and with
-        //    it `teardown_sync()` — never runs. Full derivation in
-        //    ./sync-socket. Every close() therefore used to leave a live socket
-        //    behind (and a per-connection Lattice open on the server); a page
-        //    redialing every 5s accumulated them.
-        // 2. Quiescing the socket before the final snapshot makes that snapshot
-        //    deterministic: no remote apply can land between walCheckpoint()
-        //    and the MEMFS read that follows it.
-        //
-        // Refcounted — a sibling Lattice sharing this wasm instance's transport
-        // keeps it open. Deliberately silent: the wasm's close handler is
-        // detached first, so an app-level reconnect controller listening via
-        // onSyncState does not hear this teardown and redial into it (same
-        // contract as the C++ disconnect()).
-        if (this.syncSockets.length > 0) {
-            const closed = releaseSyncSockets(this.syncSockets, wasmModule);
-            this.syncSockets = [];
-            console.log(`[Lattice.close] sync sockets released (${closed} closed)`);
-        }
-
-        // Remove sync observer
-        if (this.syncObserverId) {
-            this.syncObserverId();
-            this.syncObserverId = null;
-        }
-
-        // Retire openPersistent's snapshot timer + page-lifecycle listeners
-        // FIRST (nothing may schedule a save once teardown begins)…
-        if (this.housekeepingCleanup) {
-            this.housekeepingCleanup();
-            this.housekeepingCleanup = null;
-        }
-        // …then take the close-time snapshot while the wasm instance is
-        // still alive. Best-effort: a failed final save costs a larger
-        // delta on next open, never corruption (createWritable is
-        // swap-on-close).
-        if (this.persistentFinalFlush) {
-            try {
-                await this.persistentFinalFlush();
-            } catch (err) {
-                console.warn('[Lattice.close] final snapshot failed:', err);
+    close(options: LatticeCloseOptions = {}): Promise<LatticeCloseResult> {
+        if (this.closePromise) return this.closePromise;
+        const timeout = (value: number | undefined, fallback: number): number => {
+            const result = value ?? fallback;
+            if (!Number.isFinite(result) || result < 0 || result > 30000) {
+                throw new RangeError('Close timeouts must be finite milliseconds between 0 and 30000.');
             }
-            this.persistentFinalFlush = null;
-        }
+            return result;
+        };
+        const uploadMs = timeout(options.uploadTimeoutMs, 0);
+        const transportMs = timeout(options.transportTimeoutMs, 2000);
+        const snapshotMs = timeout(options.snapshotTimeoutMs, 2000);
+        this.closing = true;
+        this.syncState.retire();
+        for (const stop of [...this.stopWaits]) stop();
+        this.housekeepingCleanup?.();
+        this.housekeepingCleanup = null;
+        this.closePromise = (async () => {
+            // A lifecycle/row callback can call close while C++ is still on the
+            // stack. Destruction and native unsubscription start on a later task.
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            if (this.socketWatchId !== null) {
+                try { this.db.unwatchSyncSocket?.(this.socketWatchId); } catch { /* Native release also retires watchers. */ }
+                this.socketWatchId = null;
+            }
+            for (const dispose of [...this.observerDisposers]) {
+                try { dispose(); } catch { /* Native release still must run. */ }
+            }
+            this.syncObserverId?.(); this.syncObserverId = null;
+            const uploads = await this.finishUploads(uploadMs);
+            // Fetch again because the native watcher may have a queued handoff.
+            // Modern native ownership alone authorizes disconnect of shared stores.
+            let sockets = this.syncSockets;
+            let transport: Promise<LatticeCloseResult['transport']>;
+            if (this.hasNativeLifecycle() && this.db.prepareClose) {
+                try {
+                    const socket = this.db.getSyncSocket!();
+                    sockets = socket ? [socket] : [];
+                    const disposition = this.db.prepareClose();
+                    transport = !this.syncConfigured ? Promise.resolve('not-configured') :
+                        disposition === 'shared' ? Promise.resolve('shared') : waitForSyncSocketsClosed(sockets, transportMs);
+                } catch { transport = Promise.resolve('unavailable'); }
+                forgetSyncSockets(this.syncSockets);
+            } else {
+                transport = this.syncConfigured ? closeSyncSockets(sockets, wasmModule, transportMs) :
+                    Promise.resolve('not-configured');
+            }
+            this.syncSockets = [];
+            let snapshot: LatticeCloseResult['snapshot'] = 'not-persistent';
+            let native: LatticeCloseResult['native'];
+            const flush = this.persistentFinalFlush; this.persistentFinalFlush = null;
+            if (flush) {
+                const saving = Promise.resolve().then(flush).catch(() => 'error' as const);
+                const settled = await within(saving, snapshotMs);
+                if (settled.completed) {
+                    snapshot = settled.value;
+                    native = this.releaseNativeStorage();
+                } else {
+                    snapshot = 'timeout'; native = 'pending';
+                    // The outstanding save can still touch db. Retain it until
+                    // settlement and keep the initial result explicitly pending.
+                    void saving.then(() => this.releaseNativeStorage());
+                }
+            } else native = this.releaseNativeStorage();
+            return Object.freeze({ native, transport: await transport, uploads, snapshot });
+        })();
+        return this.closePromise;
+    }
 
-        // Destroy the embind wrapper. This runs `~JsLattice`, which is where
-        // the wasm-side teardown SHOULD continue — `releaseSwiftLatticeRef` ->
-        // `~swift_lattice` -> `~lattice_db` -> `teardown_sync()`. It does not:
-        // `swift_lattice_ref` is handed out with `ref_count_ == 0` (the
-        // factories return UNRETAINED and every LatticeCAPI open pairs them
-        // with `ref->retain()`; wasm/bindings.cpp does not), so `release()`
-        // decrements to -1, never frees the ref, and the sqlite connection,
-        // synchronizer and transport all outlive this call. Fixing that needs
-        // a wasm rebuild (one `ref->retain()` after `swift_lattice_ref::create`
-        // in wasm/bindings.cpp). Until then the socket teardown above is the
-        // part JS can enforce, and this delete() still frees the wrapper and
-        // makes further use of `this.db` throw a BindingError rather than
-        // silently operating on a closed database.
+    private assertOpen(): void {
+        if (this.closing) throw new Error('Lattice is closing or closed.');
+    }
+
+    /** Includes a native transport created after open, without polling other stores. */
+    private waitForSyncOpen(timeoutMs: number): Promise<boolean> {
+        return new Promise(resolve => {
+            if (this.closing) { resolve(false); return; }
+            let settled = false;
+            let off = () => {};
+            const finish = (opened: boolean) => {
+                if (settled) return;
+                settled = true; clearTimeout(timer); this.stopWaits.delete(stop); off(); resolve(opened);
+            };
+            const stop = () => finish(false);
+            const timer = setTimeout(stop, timeoutMs);
+            this.stopWaits.add(stop);
+            off = this.syncState.subscribeInternal(info => { if (info.state === 'open') finish(true); });
+            if (settled) off(); // Immediate current-state replay may finish inside subscribe.
+        });
+    }
+
+    private sleepWhileOpen(ms: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (this.closing) { reject(new Error('Lattice is closing or closed.')); return; }
+            const stop = () => {
+                clearTimeout(timer); this.stopWaits.delete(stop);
+                reject(new Error('Lattice is closing or closed.'));
+            };
+            const timer = setTimeout(() => { this.stopWaits.delete(stop); resolve(); }, ms);
+            this.stopWaits.add(stop);
+        });
+    }
+
+    private hasNativeLifecycle(): boolean {
+        return typeof this.db.getSyncSocket === 'function' &&
+            typeof this.db.requestSyncUpload === 'function' &&
+            typeof this.db.getPendingSyncUploadCount === 'function' &&
+            typeof this.db.prepareClose === 'function';
+    }
+
+    private async finishUploads(timeoutMs: number): Promise<LatticeCloseResult['uploads']> {
+        if (timeoutMs === 0) return 'not-requested';
+        if (!this.syncConfigured || !this.db.getPendingSyncUploadCount || !this.db.requestSyncUpload) return 'unavailable';
+        const deadline = performance.now() + timeoutMs;
+        try {
+            this.db.requestSyncUpload();
+            for (;;) {
+                const pending = this.db.getPendingSyncUploadCount();
+                if (!Number.isSafeInteger(pending) || pending < 0) return 'unavailable';
+                if (pending === 0) return 'drained';
+                const remaining = deadline - performance.now();
+                if (remaining <= 0) return 'timeout';
+                await new Promise<void>(resolve => setTimeout(resolve, Math.min(25, remaining)));
+            }
+        } catch { return 'unavailable'; }
+    }
+
+    private releaseNativeStorage(): LatticeCloseResult['native'] {
+        if (this.nativeCleanupResult) return this.nativeCleanupResult;
+        let native: LatticeCloseResult['native'] = 'unsupported';
+        try {
+            if (this.db.releaseStorage) {
+                const supported = this.hasNativeLifecycle();
+                const result = this.db.releaseStorage();
+                native = !supported ? 'unsupported' : result === 'pending' ? 'pending' :
+                    result === 'closed' || result === 'already-released' ? 'closed' :
+                    result === 'shared' ? 'shared' : result === undefined ? 'unsupported' : 'error';
+            }
+        } catch { native = 'error'; }
         try {
             (this.db as unknown as { delete?: () => void }).delete?.();
-        } catch (err) {
-            console.warn('[Lattice.close] wasm instance delete failed:', err);
-        }
-
-        console.log('[Lattice.close] Database closed');
+        } catch { native = 'error'; }
+        this.nativeCleanupResult = native;
+        return native;
     }
+}
+
+/** A timeout does not cancel the underlying work or claim that it completed. */
+function within<T>(operation: Promise<T>, timeoutMs: number): Promise<
+    { completed: true; value: T } | { completed: false }
+> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ completed: false }), timeoutMs);
+        operation.then(value => { clearTimeout(timer); resolve({ completed: true, value }); },
+            error => { clearTimeout(timer); reject(error); });
+    });
 }

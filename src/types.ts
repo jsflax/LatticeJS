@@ -108,11 +108,10 @@ export interface LatticeWasm {
      *  _lattice_sync_state) — downloads excluded, stranded local writes and
      *  drained-in rows included. The drain predicate, in SQL. */
     getUnshippedAuditLog(): string;
-    /** Release this handle's reference to the underlying store. For a
-     *  read-only audit open this CLOSES the sqlite connection; embind's
-     *  .delete() alone frees only the JS wrapper. Idempotent; no other
-     *  method is valid afterwards. */
-    releaseStorage(): void;
+    /** Release this handle's native store reference. Shared holders retain
+     *  storage. Legacy bindings only support read-only audit release and return
+     *  void. Idempotent; no store method is valid on this handle afterwards. */
+    releaseStorage?(): 'closed' | 'shared' | 'already-released' | 'pending' | void;
     applyRemoteChanges(json: string): string;
     markEntriesSynced(idsJson: string): void;
     observeAuditLog(callback: (json: string) => void): number;
@@ -139,7 +138,15 @@ export interface LatticeWasm {
 
     // Sync progress / filters / compaction
     getSyncProgress(): SyncProgress;
+    /** Lifecycle bindings are absent from older generated WASM assets. */
+    getSyncSocket?(): import('./sync-socket').TrackedSyncSocket | null;
+    watchSyncSocket?(callback: (socket: import('./sync-socket').TrackedSyncSocket | null) => void): number;
+    unwatchSyncSocket?(observerId: number): void;
+    prepareClose?(): 'exclusive' | 'shared' | 'already-released';
+    requestSyncUpload?(): void;
+    getPendingSyncUploadCount?(): number;
     onSyncProgress(callback: (progress: SyncProgress) => void): number;
+    removeSyncProgress?(observerId: number): void;
     updateSyncFilter(filterJson: string): void;
     clearSyncFilter(): void;
     compactAuditLog(): void;
@@ -152,9 +159,29 @@ export interface LatticeWasm {
 /// upstream) surfaces as {state:'closed', code:1006} — browsers hide the
 /// HTTP status, so pair this with an HTTP preflight for auth decisions.
 export interface SyncStateInfo {
-  state: 'open' | 'closed' | 'error';
-  code: number;
-  reason: string;
+    readonly state: 'connecting' | 'open' | 'closed' | 'error';
+    /** Identifies this Lattice wrapper, including when native storage is shared. */
+    readonly instanceId: string;
+    /** Monotonic within this instance; zero means sync was not configured. */
+    readonly connectionGeneration: number;
+    readonly code: number;
+    readonly reason: string;
+}
+
+export interface LatticeCloseOptions {
+    /** Opt-in upload drain. Zero (the default) does not promise upload delivery. */
+    uploadTimeoutMs?: number;
+    /** Wait for browser socket CLOSED, default 2000ms. */
+    transportTimeoutMs?: number;
+    /** Wait for the final persistent save, default 2000ms. */
+    snapshotTimeoutMs?: number;
+}
+
+export interface LatticeCloseResult {
+    readonly native: 'closed' | 'shared' | 'unsupported' | 'error' | 'pending';
+    readonly transport: 'closed' | 'timeout' | 'shared' | 'not-configured' | 'unavailable';
+    readonly uploads: 'drained' | 'timeout' | 'not-requested' | 'unavailable';
+    readonly snapshot: 'saved' | 'timeout' | 'unavailable' | 'not-persistent' | 'error';
 }
 
 export interface SyncProgress {
