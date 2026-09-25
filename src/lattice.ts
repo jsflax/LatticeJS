@@ -77,6 +77,7 @@ export enum LogLevel {
 
 // Global WASM module cache
 let wasmModule: any = null;
+let wasmInitialization: Promise<any> | null = null;
 
 /** How long `resumePendingFrom` waits for the new store's socket to open. */
 const RESUME_CONNECT_TIMEOUT_MS = 20000;
@@ -143,18 +144,31 @@ export class Lattice {
      * here so a storage-only read can be the FIRST thing a page does.
      */
     private static async ensureWasm(): Promise<any> {
-        if (!wasmModule) {
-            const module = await import(/* @vite-ignore */ wasmJsUrl);
-            wasmModule = await module.default({
-                locateFile: (p: string) => {
-                    if (p.endsWith('.wasm')) return wasmBinaryUrl;
-                    return p;
-                }
-            });
-            // Make WASM available for model instances
-            setWasmModule(wasmModule);
+        if (wasmModule) return wasmModule;
+        // Several stores can open together. They must share one module: model
+        // pointers and MEMFS paths belong to that module's memory, so replacing
+        // the global binding after another store opens is unsafe.
+        if (!wasmInitialization) {
+            wasmInitialization = (async () => {
+                const module = await import(/* @vite-ignore */ wasmJsUrl);
+                const loaded = await module.default({
+                    locateFile: (p: string) => {
+                        if (p.endsWith('.wasm')) return wasmBinaryUrl;
+                        return p;
+                    }
+                });
+                setWasmModule(loaded);
+                wasmModule = loaded;
+                return loaded;
+            })();
         }
-        return wasmModule;
+        const pending = wasmInitialization;
+        try {
+            return await pending;
+        } catch (error) {
+            if (wasmInitialization === pending) wasmInitialization = null;
+            throw error;
+        }
     }
 
     /**

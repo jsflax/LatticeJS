@@ -38,6 +38,20 @@ def main():
     output.mkdir(parents=True)
     for name in ['inputs', 'tmp', 'cache']:
         (output / name).mkdir()
+    # Archive the recorded commits, rather than compiling a mutable checkout.
+    # Ignored old binaries and edits made after the initial clean check cannot
+    # enter the compiler's source mount.
+    sources = output / 'source'
+    for path, revision, name, target in [(ROOT, 'HEAD', 'lattice-js', sources),
+            (core, expected_core, 'lattice-core', sources / 'LatticeCore')]:
+        zipped_source = output / 'inputs' / (name + '.zip')
+        subprocess.run(['git', '-C', str(path), 'archive', '--format=zip',
+            '--output=' + str(zipped_source), revision], check=True)
+        with zipfile.ZipFile(zipped_source) as zipped:
+            for entry in zipped.infolist():
+                if target not in (target / entry.filename).resolve().parents:
+                    raise SystemExit('Invalid source archive path')
+            zipped.extractall(target)
     archive = output / 'inputs/sqlite-amalgamation-3450000.zip'
     with urllib.request.urlopen(SQLITE_URL, timeout=60) as response, archive.open('wb') as target:
         # Fixed expected artifact is 2.7 MB; reject unexpected unbounded content.
@@ -63,6 +77,7 @@ def main():
         'toolchainImage': IMAGE,
         'platform': 'linux/arm64',
         'sqliteURL': SQLITE_URL, 'sqliteArchiveSHA256': SQLITE_SHA,
+        'sourceArchives': {name: sha(output / 'inputs' / name) for name in ['lattice-js.zip', 'lattice-core.zip']},
         'sqliteInputs': {file.name: sha(file) for file in sorted((output / 'inputs/sqlite-amalgamation-3450000').iterdir()) if file.is_file()},
         'buildType': 'Release', 'jobs': 2, 'networkDuringBuild': 'none',
     }
@@ -82,7 +97,7 @@ emcmake cmake -S /source/wasm -B /work/build -DCMAKE_BUILD_TYPE=Release \
 cmake --build /work/build --parallel 2
 '''
     command = ['docker', 'run', '--rm', '--platform', 'linux/arm64', '--network', 'none', '--cpus', '4', '--memory', '8g',
-        '--mount', f'type=bind,source={ROOT},target=/source,readonly',
+        '--mount', f'type=bind,source={sources},target=/source,readonly',
         '--mount', f'type=bind,source={output},target=/work',
         '--workdir', '/source', IMAGE, 'bash', '-c', script]
     with (output / 'build.log').open('w') as log:
