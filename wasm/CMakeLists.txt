@@ -53,6 +53,7 @@ include(FetchContent)
 FetchContent_Declare(
     sqlite3
     URL https://www.sqlite.org/2024/sqlite-amalgamation-3450000.zip
+    URL_HASH SHA256=bde30d13ebdf84926ddd5e8b6df145be03a577a48fd075a087a5dd815bcdf740
 )
 FetchContent_MakeAvailable(sqlite3)
 
