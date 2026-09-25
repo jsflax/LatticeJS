@@ -29,7 +29,10 @@ def main():
     if output.exists() or output == ROOT or ROOT in output.parents:
         raise SystemExit('Pass a fresh destination outside the source checkout')
     core = ROOT / 'LatticeCore'
-    expected_core = git(ROOT, 'rev-parse', 'HEAD:LatticeCore')
+    js_commit = git(ROOT, 'rev-parse', 'HEAD')
+    js_tree = git(ROOT, 'rev-parse', js_commit + '^{tree}')
+    expected_core = git(ROOT, 'rev-parse', js_commit + ':LatticeCore')
+    core_tree = git(core, 'rev-parse', expected_core + '^{tree}')
     if git(core, 'rev-parse', '--show-toplevel') != str(core) or git(core, 'rev-parse', 'HEAD') != expected_core:
         raise SystemExit('Initialize the exact pinned LatticeCore submodule first')
     for path in [ROOT, core]:
@@ -42,7 +45,7 @@ def main():
     # Ignored old binaries and edits made after the initial clean check cannot
     # enter the compiler's source mount.
     sources = output / 'source'
-    for path, revision, name, target in [(ROOT, 'HEAD', 'lattice-js', sources),
+    for path, revision, name, target in [(ROOT, js_commit, 'lattice-js', sources),
             (core, expected_core, 'lattice-core', sources / 'LatticeCore')]:
         zipped_source = output / 'inputs' / (name + '.zip')
         subprocess.run(['git', '-C', str(path), 'archive', '--format=zip',
@@ -70,10 +73,10 @@ def main():
     receipt = {
         'version': 1,
         'sourceRepository': 'https://github.com/jsflax/LatticeJS.git',
-        'latticeJSCommit': git(ROOT, 'rev-parse', 'HEAD'),
-        'latticeJSTree': git(ROOT, 'rev-parse', 'HEAD^{tree}'),
+        'latticeJSCommit': js_commit,
+        'latticeJSTree': js_tree,
         'latticeCoreCommit': expected_core,
-        'latticeCoreTree': git(core, 'rev-parse', 'HEAD^{tree}'),
+        'latticeCoreTree': core_tree,
         'toolchainImage': IMAGE,
         'platform': 'linux/arm64',
         'sqliteURL': SQLITE_URL, 'sqliteArchiveSHA256': SQLITE_SHA,
@@ -99,6 +102,8 @@ cmake --build /work/build --parallel 2
     command = ['docker', 'run', '--rm', '--platform', 'linux/arm64', '--network', 'none', '--cpus', '4', '--memory', '8g',
         '--mount', f'type=bind,source={sources},target=/source,readonly',
         '--mount', f'type=bind,source={output},target=/work',
+        '--mount', f'type=bind,source={sources},target=/work/source,readonly',
+        '--mount', f'type=bind,source={output / "inputs"},target=/work/inputs,readonly',
         '--workdir', '/source', IMAGE, 'bash', '-c', script]
     with (output / 'build.log').open('w') as log:
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
