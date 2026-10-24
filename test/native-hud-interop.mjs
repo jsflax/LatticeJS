@@ -147,7 +147,8 @@ try {
             { encoding: 'utf8', timeout: 10000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', TMPDIR: out } }));
         const normalized = rows => rows.map(row => ({ table: row.table, globalId: row.globalId ?? null, localId: row.localId ?? null,
             fields: Object.fromEntries(Object.entries(row.fields).map(([name, cell]) => [name,
-                ['float64', 'unixSeconds'].includes(cell.kind) ? { kind: cell.kind, bits: cell.bits } : cell]))
+                ['float64', 'unixSeconds'].includes(cell.kind) ? { kind: 'float64', bits: cell.bits }
+                    : cell.kind === 'embeddedJSON' ? { kind: 'text', value: cell.value } : cell]))
         })).sort((a, b) => `${a.table}|${a.globalId ?? a.localId}`.localeCompare(`${b.table}|${b.globalId ?? b.localId}`));
         assert.deepEqual(normalized(inspected.rows), normalized(expected), `${stage} actual physical junction rows`);
         assert.equal(inspected.fileSHA256, describe(copy).sha256);
@@ -172,6 +173,11 @@ try {
 } catch (error) { failure = error?.stack ?? String(error); }
 finally {
     clearTimeout(watchdog);
+    if (module) {
+        await settle(); final = diagnostics();
+        if (baseline && diagnosticKeys.some(key => final[key] !== baseline[key]))
+            failure = `${failure ?? ''}\nNative resources were retained after cleanup`;
+    }
     process.off('uncaughtException', onError); process.off('unhandledRejection', onError);
     Object.assign(console, previousConsole);
     for (const record of Object.values(inputs)) if (describe(record.path).sha256 !== record.sha256) failure = `${failure ?? ''}\nOriginal input changed: ${record.path}`;
