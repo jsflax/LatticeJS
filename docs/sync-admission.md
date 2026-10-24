@@ -1,7 +1,7 @@
 # Browser sync admission (candidate)
 
 This optional path waits for host admission before every WebSocket construction.
-It is source-qualified in TypeScript; native and actual-browser qualification are pending.
+It is qualified by the focused native and actual-browser checks below.
 The previously qualified 39-case artifact does not expose this capability and fails closed.
 
 ```ts
@@ -82,6 +82,19 @@ uploads, transport retirement, snapshot disposition, and native release.
   The fixture uses HTTP loopback; it does not qualify production TLS/Secure cookies,
   external account authorization, the actual gateway, or a release.
 
-After the coordinated native build and unchanged baseline39 pass, run the browser gate
-with fresh localdev evidence and `HUD_BROWSER_REPO` pointing to the existing Browser
-test tooling. Do not run it against the preserved39 artifact expecting success.
+On 2026-10-24, the candidate passed the native four-case target, all 39 unchanged
+actual Wasm lifecycle cases, and all four actual Chrome admission scenarios. The
+browser observed three freshly admitted upgrades, one rejected ticket reuse, one
+actual Core resume cursor, zero credential query parameters/Authorization headers,
+and zero remaining native owners, schedulers, handles, or callbacks. No external
+requests or browser errors occurred. The browser version was Chrome 156.0.8078.47.
+
+Exact source hashes, commands, logs, and receipts are retained in
+`tmp/wasm-sync-admission-v1/`; the native receipt is
+`/Users/jason/localdev/hud-scratch/lattice-transport-auth-v1/receipt.json`.
+The qualified loader SHA256 is
+`c2d377e1ac7d41ffe5993c89ee41304f91caa3013c7d46eac6462a5206d0f6be`;
+the Wasm SHA256 is
+`ad0cf8a0d79353b49937cc41b0c2c1640efdfb7e3f9a15194a5c62e0a504f452`.
+The prior 39-case artifact is preserved separately. Actual gateway/HTTPS testing,
+upstream publication, and owner application adoption remain separate gates.
