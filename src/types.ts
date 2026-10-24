@@ -1,7 +1,16 @@
 // Core types for LatticeJS
 
 export type ColumnType = 'string' | 'int' | 'float' | 'bool' | 'blob' | 'date';
-export type PropertyKind = 'primitive' | 'link' | 'list';
+export type PropertyKind = 'primitive' | 'link' | 'list' | 'union';
+
+export interface UnionCaseDescriptor {
+    readonly name: string;
+    readonly values: readonly { readonly paramName: string; readonly type: 'string' | 'int' }[];
+}
+export interface UnionValue {
+    readonly case: string;
+    readonly fields: Readonly<Record<string, string | bigint>>;
+}
 
 export interface PropertyDescriptor {
     name: string;
@@ -12,6 +21,9 @@ export interface PropertyDescriptor {
     isVector?: boolean;
     isFullText?: boolean;
     isIndexed?: boolean;
+    noHistory?: boolean;
+    logicalNullable?: boolean;
+    unionCases?: readonly UnionCaseDescriptor[];
 }
 
 export interface Constraint {
@@ -68,6 +80,9 @@ export type ModelConstructor<T = any> = new (...args: any[]) => T;
 // WASM module interface (what Embind exports)
 export interface LatticeWasmModule {
     Lattice: new (path: string, schemas: SchemaEntry[]) => LatticeWasm;
+    /** Exact first union descriptor/value capability; absent in older builds. */
+    explicitUnionVersion?: () => number;
+    explicitNoHistoryVersion?: () => number;
 }
 
 export interface LatticeWasm {
@@ -86,6 +101,8 @@ export interface LatticeWasm {
         groupBy?: string | null,
         distinctBy?: string | null
     ): Record<string, any>[];
+    /** Identity-only rows for explicit-model hydration; absent in older runtimes. */
+    objectIdentities?: LatticeWasm['objects'];
     count(
         tableName: string,
         whereClause: string | null,

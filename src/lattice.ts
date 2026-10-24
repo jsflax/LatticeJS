@@ -1,6 +1,7 @@
 // Main Lattice class - user-facing API
 import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
+import { checkedRowId, isExplicitModel } from './explicit-values';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
 import { safeRandomUUID } from './uuid';
@@ -40,6 +41,10 @@ export interface AuditLogEntry {
     timestamp: string;
     isFromRemote: boolean;
     isSynchronized: boolean;
+    /** Synthesized snapshots use Core's insert-if-absent apply semantics. */
+    synthesized?: boolean;
+    /** Explicit live NULLs, distinct from NoHistory audit placeholders. */
+    noHistoryNulls?: string[];
 }
 
 // Static imports - bundler handles the URLs
@@ -266,6 +271,13 @@ export class Lattice {
             onResumePending?: (report: DrainReport) => void;
         }
     ): Promise<Lattice> {
+        if (options?.schemaVersion !== undefined &&
+            (!Number.isInteger(options.schemaVersion) || options.schemaVersion < 1 || options.schemaVersion > 2147483647)) {
+            throw new RangeError('schemaVersion must be an integer between 1 and 2147483647');
+        }
+        if (options?.migration && options.schemaVersion === undefined) {
+            throw new TypeError('migration requires an explicit schemaVersion');
+        }
         // Build schemas from models
         const schemas = buildSchemas(models);
 
@@ -284,6 +296,15 @@ export class Lattice {
             // Load WASM module if not already loaded (needed for main thread)
             await Lattice.ensureWasm();
 
+            if (schemas.some(schema => schema.properties.some(property => property.kind === 'union')) &&
+                wasmModule.explicitUnionVersion?.() !== 1) {
+                throw new Error('Native explicitUnionVersion 1 capability required');
+            }
+            if (schemas.some(schema => schema.properties.some(property => property.noHistory === true)) &&
+                wasmModule.explicitNoHistoryVersion?.() !== 1) {
+                throw new Error('Native explicitNoHistoryVersion 1 capability required');
+            }
+
             const isInMemory = path === ':memory:' || path.startsWith(':memory:');
             const syncConfig = options?.sync;
             const schemaVersion = options?.schemaVersion;
@@ -293,47 +314,7 @@ export class Lattice {
             if (isInMemory) {
                 // In-memory: just use main thread
                 console.log('[Lattice] Creating in-memory database');
-                const makeDb = (): LatticeWasm => {
-                    if (schemaVersion && migrationFn) {
-                        // Migration-aware constructor
-                        const jsMigrationCallback = (ctx: any) => {
-                            const migrationCtx: MigrationContext = {
-                                pendingChanges: () => ctx.pendingChanges as TableChanges[],
-                                hasChangesFor: (tableName: string) => {
-                                    return (ctx.pendingChanges as TableChanges[]).some(
-                                        (c: TableChanges) => c.tableName === tableName &&
-                                            (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
-                                    );
-                                },
-                                renameProperty: (tableName: string, oldName: string, newName: string) => {
-                                    // Call C++ via the context pointer
-                                    wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
-                                },
-                                deleteAll: (tableName: string) => {
-                                    wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
-                                },
-                                executeSql: (sql: string) => {
-                                    wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
-                                },
-                                enumerateObjects: () => {
-                                    // Complex operation — not exposed in initial version
-                                    console.warn('enumerateObjects not yet supported in WASM migrations');
-                                },
-                            };
-                            migrationFn(migrationCtx);
-                        };
-                        return new wasmModule.Lattice(
-                            path, schemas,
-                            syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
-                            schemaVersion, jsMigrationCallback
-                        );
-                    } else if (syncConfig?.websocketUrl) {
-                        console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-                        return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-                    } else {
-                        return new wasmModule.Lattice(path, schemas);
-                    }
-                };
+                const makeDb = () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn);
                 const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb, state);
                 lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
                 lattice.syncSockets = sockets;
@@ -341,7 +322,7 @@ export class Lattice {
             } else {
                 // Persistent: same main-thread wasm, snapshotted to and restored
                 // from OPFS. See openPersistent.
-                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig);
+                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig, schemaVersion, migrationFn);
             }
 
             // Rescue whatever the store this one replaces never managed to upload.
@@ -357,6 +338,74 @@ export class Lattice {
         } catch (error) {
             state.fail(); state.retire();
             throw error;
+        }
+    }
+
+    // Both storage modes must use the same schema admission path. In particular,
+    // restoring an OPFS cache must never discard an explicitly requested version.
+    private static createDatabase(
+        path: string,
+        schemas: SchemaEntry[],
+        syncConfig?: { websocketUrl: string; authToken?: string },
+        schemaVersion?: number,
+        migrationFn?: (ctx: MigrationContext) => void,
+    ): LatticeWasm {
+        if (schemaVersion !== undefined) {
+            // Migration-aware constructor
+            const jsMigrationCallback = migrationFn ? (ctx: any) => {
+                let active = true;
+                const assertActive = () => {
+                    if (!active) throw new Error('Migration context is no longer active');
+                };
+                const call = (method: string, ...args: string[]) => {
+                    assertActive();
+                    const result = wasmModule[method](ctx._ctx_ptr, ...args);
+                    if (result?.ok !== true) throw new Error(result?.error ?? 'Native migration operation failed');
+                };
+                const migrationCtx: MigrationContext = {
+                    pendingChanges: () => { assertActive(); return ctx.pendingChanges as TableChanges[]; },
+                    hasChangesFor: (tableName: string) => {
+                        assertActive();
+                        return (ctx.pendingChanges as TableChanges[]).some(
+                            (c: TableChanges) => c.tableName === tableName &&
+                                (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
+                        );
+                    },
+                    renameProperty: (tableName: string, oldName: string, newName: string) => {
+                        call('_migration_rename_property', tableName, oldName, newName);
+                    },
+                    deleteAll: (tableName: string) => {
+                        call('_migration_delete_all', tableName);
+                    },
+                    executeSql: (sql: string) => {
+                        call('_migration_execute_sql', sql);
+                    },
+                    enumerateObjects: () => {
+                        throw new Error('enumerateObjects is not supported in WASM migrations');
+                    },
+                };
+                try {
+                    const result: unknown = migrationFn(migrationCtx);
+                    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+                        // Retire the context even if an accidentally async callback resumes later.
+                        // Observe a possible rejection so it cannot become an unhandled promise.
+                        Promise.resolve(result).catch(() => {});
+                        throw new TypeError('migration must complete synchronously');
+                    }
+                } finally { active = false; }
+            } : null;
+            const result = wasmModule._openVersioned(
+                path, schemas,
+                syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
+                schemaVersion, jsMigrationCallback
+            );
+            if (result?.ok !== true) throw new Error(result?.error ?? 'Versioned database open failed');
+            return result.db;
+        } else if (syncConfig?.websocketUrl) {
+            console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
+            return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
+        } else {
+            return new wasmModule.Lattice(path, schemas);
         }
     }
 
@@ -378,7 +427,9 @@ export class Lattice {
         schemas: SchemaEntry[],
         modelMap: Map<string, ModelConstructor>,
         state: InstanceSyncState,
-        syncConfig?: { websocketUrl: string; authToken?: string }
+        syncConfig?: { websocketUrl: string; authToken?: string },
+        schemaVersion?: number,
+        migrationFn?: (ctx: MigrationContext) => void,
     ): Promise<Lattice> {
         console.log('[Lattice] Opening persistent database:', path);
 
@@ -389,13 +440,8 @@ export class Lattice {
         }
 
         // Open with named path (MEMFS) + sync
-        const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, () => {
-            if (syncConfig?.websocketUrl) {
-                console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-                return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-            }
-            return new wasmModule.Lattice(path, schemas);
-        }, state);
+        const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl,
+            () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn), state);
         const lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
         lattice.syncSockets = sockets;
         try {
@@ -799,8 +845,11 @@ export class Lattice {
             throw new Error(`${modelClass.name} has no C++ backing - was WASM loaded before creating this object?`);
         }
 
-        // Add to database - this makes dynObj managed and assigns id/globalId
-        this.db.addObject(tableName, dynObj);
+        // Add makes dynObj managed and assigns id/globalId. Embind returns a
+        // separate owning wrapper for the same object; keep the instance's
+        // original wrapper and release only the redundant returned handle.
+        const added = this.db.addObject(tableName, dynObj);
+        if (added && added !== dynObj) added.delete?.();
 
         // Store lattice reference for link/list resolution
         (instance as any)[LATTICE_REF] = this;
@@ -814,12 +863,15 @@ export class Lattice {
      */
     async find<T>(modelClass: ModelConstructor<T>, id: number): Promise<T | null> {
         const tableName = getTableName(modelClass);
-        const numId = typeof id === 'bigint' ? Number(id) : id;
+        const numId = isExplicitModel(modelClass) ? checkedRowId(id) : typeof id === 'bigint' ? Number(id) : id;
 
         // Use findObject to get a JsDynamicObject with proper C++ backing
         // This is necessary for lists to work (they need to call C++ getLinkList)
         const dynObj = this.db.findObject(tableName, numId);
-        if (!dynObj || !dynObj.isValid()) return null;
+        if (!dynObj || !dynObj.isValid()) {
+            dynObj?.delete?.();
+            return null;
+        }
 
         return this.dynObjToInstance(modelClass, dynObj);
     }
@@ -828,6 +880,9 @@ export class Lattice {
      * Find an object by its global ID.
      */
     async findByGlobalId<T>(modelClass: ModelConstructor<T>, globalId: string): Promise<T | null> {
+        if (isExplicitModel(modelClass)) {
+            throw new Error('findByGlobalId is not supported for explicit models; use find with a checked row ID');
+        }
         const tableName = getTableName(modelClass);
         const data = this.db.findByGlobalId(tableName, globalId);
         if (!data) return null;
@@ -885,7 +940,9 @@ export class Lattice {
         }
     ): Promise<T[]> {
         const tableName = getTableName(modelClass);
-        const data = this.db.objects(
+        const query = isExplicitModel(modelClass) ? this.db.objectIdentities : this.db.objects;
+        if (typeof query !== 'function') throw new Error('Explicit model queries require the objectIdentities runtime capability');
+        const data = query.call(this.db,
             tableName,
             options?.where ?? null,
             options?.orderBy ?? null,
@@ -912,7 +969,7 @@ export class Lattice {
      */
     async remove<T>(modelClass: ModelConstructor<T>, id: number): Promise<boolean> {
         const tableName = getTableName(modelClass);
-        const numId = typeof id === 'bigint' ? Number(id) : id;
+        const numId = isExplicitModel(modelClass) ? checkedRowId(id) : typeof id === 'bigint' ? Number(id) : id;
         return this.db.remove(tableName, numId);
     }
 
@@ -924,6 +981,12 @@ export class Lattice {
      */
     async addAll<T extends LatticeObject>(instances: T[]): Promise<T[]> {
         if (instances.length === 0) return [];
+        // addBulk currently converts plain JS objects, not DynamicObject-backed
+        // fields. Refuse the entire batch before any native call, including a
+        // mixed batch whose first model happens to use legacy decorators.
+        if (instances.some(instance => isExplicitModel(instance.constructor as ModelConstructor))) {
+            throw new Error('addAll is not supported for explicit models; use add for each model');
+        }
 
         const modelClass = instances[0].constructor as ModelConstructor;
         if (!isModel(modelClass)) {
@@ -1109,6 +1172,15 @@ export class Lattice {
      * Note: This creates a NEW DynamicObject and copies data into it.
      */
     private dataToInstance<T>(modelClass: ModelConstructor<T>, data: Record<string, unknown>): T {
+        if (isExplicitModel(modelClass)) {
+            const id = checkedRowId(data.id);
+            const managed = this.db.findObject(getTableName(modelClass), id);
+            if (!managed?.isValid()) {
+                managed?.delete?.();
+                throw new Error('Explicit model query could not hydrate a managed row');
+            }
+            return hydrateInstance(modelClass, managed, this);
+        }
         // MANAGED hydration first: a query row with an id gets the REAL
         // C++-backed object (same path as find()), so property setters write
         // through to the row (audit triggers → sync history) and LinkLists
@@ -1252,6 +1324,25 @@ export class Lattice {
      * Parse a raw audit log entry from JSON into typed AuditLogEntry.
      */
     private parseAuditLogEntry(e: any): AuditLogEntry {
+        const changedFields = typeof e.changedFields === 'string'
+            ? JSON.parse(e.changedFields) : e.changedFields;
+        const changedFieldsNames = typeof e.changedFieldsNames === 'string'
+            ? JSON.parse(e.changedFieldsNames) : e.changedFieldsNames;
+        let noHistoryNulls: string[] | undefined;
+        if (Object.hasOwn(e, 'noHistoryNulls')) {
+            const names = e.noHistoryNulls;
+            if (!Array.isArray(names) || new Set(names).size !== names.length ||
+                (names.length > 0 && e.operation !== 'INSERT' && e.operation !== 'UPDATE') ||
+                names.some(name => {
+                    if (typeof name !== 'string' || name.length === 0 ||
+                        !Array.isArray(changedFieldsNames) || !changedFieldsNames.includes(name) ||
+                        !changedFields || !Object.hasOwn(changedFields, name)) return true;
+                    const value = changedFields[name];
+                    return value !== null && !(typeof value === 'object' && !Array.isArray(value) &&
+                        value.kind === 4 && Object.hasOwn(value, 'value') && value.value === null);
+                })) throw new TypeError('Invalid noHistoryNulls audit marker');
+            noHistoryNulls = [...names];
+        }
         return {
             id: e.id,
             globalId: e.globalId,
@@ -1259,15 +1350,13 @@ export class Lattice {
             operation: e.operation,
             rowId: e.rowId,
             globalRowId: e.globalRowId,
-            changedFields: typeof e.changedFields === 'string'
-                ? JSON.parse(e.changedFields)
-                : e.changedFields,
-            changedFieldsNames: typeof e.changedFieldsNames === 'string'
-                ? JSON.parse(e.changedFieldsNames)
-                : e.changedFieldsNames,
+            changedFields,
+            changedFieldsNames,
             timestamp: e.timestamp,
             isFromRemote: e.isFromRemote,
             isSynchronized: e.isSynchronized,
+            ...(typeof e.synthesized === 'boolean' ? { synthesized: e.synthesized } : {}),
+            ...(noHistoryNulls === undefined ? {} : { noHistoryNulls }),
         };
     }
 

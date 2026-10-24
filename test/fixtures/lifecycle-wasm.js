@@ -3,9 +3,10 @@ export default async function lifecycleWasm() {
     const control = globalThis.__latticeLifecycleTest;
     control.factories = (control.factories ?? 0) + 1;
     if (control.factoryError) throw new Error('factory failure');
-    return {
+    const module = {
         Lattice: class {
-            constructor(path, schemas, syncUrl = '') {
+            constructor(path, schemas, syncUrl = '', authToken = '', schemaVersion, migration) {
+                control.onConstruct?.({ path, schemas, syncUrl, authToken, schemaVersion, migration });
                 this.path = path; this.observers = new Map(); this.watchers = new Map(); this.nextId = 1;
                 let store = control.stores.get(path);
                 if (!store) {
@@ -59,5 +60,13 @@ export default async function lifecycleWasm() {
         },
         FS: { analyzePath: () => ({ exists: true }), readFile: () => control.snapshotBytes ?? new Uint8Array(0), writeFile() {} },
         _ws_purge_client() { control.purges++; },
+        _migration_execute_sql(...args) { return control.migrationOperation?.('executeSql', ...args) ?? { ok: true }; },
+        _migration_delete_all(...args) { return control.migrationOperation?.('deleteAll', ...args) ?? { ok: true }; },
+        _migration_rename_property(...args) { return control.migrationOperation?.('renameProperty', ...args) ?? { ok: true }; },
+        _openVersioned(...args) {
+            try { return { ok: true, db: new module.Lattice(...args) }; }
+            catch (error) { return { ok: false, error: error.message }; }
+        },
     };
+    return module;
 }

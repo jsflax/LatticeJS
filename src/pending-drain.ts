@@ -100,6 +100,8 @@ export interface PendingUploadRow {
     /** Always false for a pending row — kept so the row round-trips verbatim. */
     isSynchronized: boolean;
     synthesized?: boolean;
+    /** Live NULL markers supplied by Core's NoHistory late binder. */
+    noHistoryNulls?: string[];
 }
 
 /** The one embind method needed to read a store's pending set. */

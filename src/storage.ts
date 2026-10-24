@@ -1,7 +1,7 @@
 // C++ backing storage for LatticeJS models
 // This module provides access to the WASM dynamic_object_ref
 
-import type { PropertyDescriptor } from './types';
+import type { PropertyDescriptor, UnionCaseDescriptor } from './types';
 
 // Global WASM module reference (set when Lattice.open() is called)
 let wasmModule: any = null;
@@ -41,6 +41,7 @@ export const LATTICE_REF = Symbol('lattice:latticeRef');
  * Symbol for storing property schema on model classes.
  */
 export const PROPERTY_SCHEMA = Symbol('lattice:propertySchema');
+export const EXPLICIT_MODEL = Symbol('lattice:explicitModel');
 
 /**
  * Property schema stored on model class.
@@ -48,7 +49,7 @@ export const PROPERTY_SCHEMA = Symbol('lattice:propertySchema');
 export interface PropertySchema {
     name: string;
     type: 'string' | 'int' | 'float' | 'bool' | 'blob' | 'date';
-    kind: 'primitive' | 'link' | 'list';
+    kind: 'primitive' | 'link' | 'list' | 'union';
     defaultValue: any;
     targetModel?: any; // For link/list
     nullable?: boolean;
@@ -56,6 +57,12 @@ export interface PropertySchema {
     vectorDimensions?: number;
     isFullText?: boolean;
     isIndexed?: boolean;
+    noHistory?: boolean;
     embeddedClass?: new () => any;
     enumObj?: Record<string, string | number>;
+    targetTable?: string;
+    logicalNullable?: boolean;
+    unionCases?: readonly UnionCaseDescriptor[];
+    /** Explicit descriptors use strict codecs, never inferred defaults. */
+    explicit?: 'scalar' | 'bigint' | 'unixSeconds' | 'link' | 'union';
 }

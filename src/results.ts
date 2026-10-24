@@ -2,6 +2,7 @@
 import type { ModelConstructor, LatticeWasm } from './types';
 import { getTableName } from './decorators';
 import { QueryNode, QueryProxy, createQueryProxy } from './query';
+import { isExplicitModel } from './explicit-values';
 
 /**
  * Options for querying results.
@@ -79,6 +80,13 @@ export class Results<T> implements AsyncIterable<T> {
         });
     }
 
+    private queryRows(limit: number | null, offset: number | null): Record<string, unknown>[] {
+        const query = isExplicitModel(this.modelClass) ? this.db.objectIdentities : this.db.objects;
+        if (typeof query !== 'function') throw new Error('Explicit model queries require the objectIdentities runtime capability');
+        return query.call(this.db, this.tableName, this.whereClause, this.orderByClause,
+            limit, offset, this.groupByClause, this.distinctByClause);
+    }
+
     /**
      * Get the count of matching objects (live query).
      */
@@ -103,15 +111,7 @@ export class Results<T> implements AsyncIterable<T> {
      * Get object at index (live query).
      */
     async at(index: number): Promise<T | undefined> {
-        const data = this.db.objects(
-            this.tableName,
-            this.whereClause,
-            this.orderByClause,
-            1,      // limit
-            index,  // offset
-            this.groupByClause,
-            this.distinctByClause
-        );
+        const data = this.queryRows(1, index);
         if (data.length === 0) return undefined;
         return this.instanceFactory(data[0]);
     }
@@ -127,15 +127,7 @@ export class Results<T> implements AsyncIterable<T> {
      * Get all objects as an array (snapshot - not live).
      */
     async snapshot(): Promise<T[]> {
-        const data = this.db.objects(
-            this.tableName,
-            this.whereClause,
-            this.orderByClause,
-            null,
-            null,
-            this.groupByClause,
-            this.distinctByClause
-        );
+        const data = this.queryRows(null, null);
         return data.map((d: Record<string, any>) => this.instanceFactory(d));
     }
 
@@ -206,6 +198,9 @@ export class Results<T> implements AsyncIterable<T> {
      * Requires the column to be marked with fullText().
      */
     async matching(column: string, searchText: string, maxResults?: number): Promise<T[]> {
+        if (isExplicitModel(this.modelClass)) {
+            throw new Error('matching is not supported for explicit models; identity-only full-text queries are not available');
+        }
         const data = this.db.ftsQuery(
             this.tableName,
             column,
@@ -230,6 +225,9 @@ export class Results<T> implements AsyncIterable<T> {
         k: number,
         options?: { distance?: 'l2' | 'cosine' | 'l1' }
     ): Promise<{ item: T; distance: number }[]> {
+        if (isExplicitModel(this.modelClass)) {
+            throw new Error('nearest is not supported for explicit models; vector descriptors and managed global-ID lookup are not available');
+        }
         const metricMap = { l2: 0, cosine: 1, l1: 2 };
         const metric = metricMap[options?.distance ?? 'l2'];
 
@@ -261,15 +259,7 @@ export class Results<T> implements AsyncIterable<T> {
         let offset = 0;
 
         while (true) {
-            const batch = this.db.objects(
-                this.tableName,
-                this.whereClause,
-                this.orderByClause,
-                batchSize,
-                offset,
-                this.groupByClause,
-                this.distinctByClause
-            );
+            const batch = this.queryRows(batchSize, offset);
 
             if (batch.length === 0) break;
 

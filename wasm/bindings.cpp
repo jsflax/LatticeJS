@@ -5,6 +5,8 @@
 #include <sqlite3.h>
 #include <map>
 #include <unordered_set>
+#include <type_traits>
+#include <algorithm>
 
 // WASMFS is only available when WASMFS=1 is set
 #ifdef __EMSCRIPTEN_WASM_WORKERS__
@@ -21,6 +23,67 @@
 
 using namespace emscripten;
 using namespace lattice;
+
+// Emscripten's JS exception mode only unwinds C++ exceptions. Catch a user JS
+// error here and return it as data so the caller can throw *inside* C++; Core's
+// transaction and migration-context guards must run on a refused migration.
+EM_JS(EM_VAL, lattice_call_migration_js, (EM_VAL callback, EM_VAL context), {
+    try {
+        const result = Emval.toValue(callback)(Emval.toValue(context));
+        if (result && typeof result.then === 'function') {
+            Promise.resolve(result).catch(() => {});
+            return Emval.toHandle({ok: false, error: 'migration must complete synchronously'});
+        }
+        return Emval.toHandle({ok: true});
+    } catch (error) {
+        let message = 'Migration callback failed';
+        try { message = String(error && error.message !== undefined ? error.message : error); } catch (_) {}
+        return Emval.toHandle({ok: false, error: message});
+    }
+});
+
+// A migration context belongs to the synchronous open callback. Reject a
+// retained token after that callback before touching Core's stack state. Tokens
+// are never reused, even when a later callback occupies the same stack address.
+static std::map<uint32_t, swift_migration_context_ref*> active_migrations;
+static uint32_t next_migration_token = 0;
+struct ActiveMigration {
+    uint32_t token;
+    explicit ActiveMigration(swift_migration_context_ref* ctx) {
+        if (next_migration_token == 0xffffffffu) throw std::runtime_error("Migration context tokens exhausted");
+        token = ++next_migration_token;
+        active_migrations.emplace(token, ctx);
+    }
+    ~ActiveMigration() { active_migrations.erase(token); }
+};
+static swift_migration_context_ref& migration_context_at(uint32_t token) {
+    auto found = active_migrations.find(token);
+    if (found == active_migrations.end()) throw std::runtime_error("Migration context is no longer active");
+    return *found->second;
+}
+// Return native failures as data too: allowing a C++ exception pointer to reach
+// the JavaScript callback would lose its cleanup when JS catches that number.
+template <typename Operation> static val migration_operation(Operation operation) {
+    val result = val::object();
+    try {
+        operation();
+        result.set("ok", true);
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    }
+    return result;
+}
+static val migration_rename_property(uint32_t token, const std::string& table,
+                                      const std::string& from, const std::string& to) {
+    return migration_operation([&] { migration_context_at(token).rename_property(table, from, to); });
+}
+static val migration_delete_all(uint32_t token, const std::string& table) {
+    return migration_operation([&] { migration_context_at(token).delete_all(table); });
+}
+static val migration_execute_sql(uint32_t token, const std::string& sql) {
+    return migration_operation([&] { migration_context_at(token).execute_sql(sql); });
+}
 
 // Debug logging that works in SharedWorker by posting to BroadcastChannel
 EM_JS(void, debugLogToChannel, (const char* msg), {
@@ -615,6 +678,30 @@ class JsLinkList;
 // DynamicObjectRef wrapper for Embind
 // ============================================================================
 
+[[noreturn]] void throw_js_error(const std::string& msg);
+
+// Core's Swift bridge seals scalar failures and returns a default. Read its
+// error slot immediately, before another bridge call can clear it. C++ failures
+// must also become ordinary JS Errors rather than numeric exception pointers.
+template <typename Operation>
+static auto checked_object_call(dynamic_object_ref* ref, Operation operation, bool sealed = true) {
+    if (!ref || !ref->valid()) throw_js_error("Invalid native object");
+    try {
+        if constexpr (std::is_void_v<std::invoke_result_t<Operation>>) {
+            operation();
+            const auto error = sealed ? ref->last_query_error_message() : std::string();
+            if (!error.empty()) throw std::runtime_error(error);
+        } else {
+            auto result = operation();
+            const auto error = sealed ? ref->last_query_error_message() : std::string();
+            if (!error.empty()) throw std::runtime_error(error);
+            return result;
+        }
+    } catch (const std::exception& error) {
+        throw_js_error(error.what());
+    }
+}
+
 class JsDynamicObject {
 public:
     JsDynamicObject() : ref_(nullptr) {}
@@ -640,62 +727,81 @@ public:
         return *this;
     }
 
-    bool isValid() const { return ref_ != nullptr; }
+    bool isValid() const { return ref_ && ref_->valid(); }
 
     // Getters
     int64_t getInt(const std::string& name) const {
-        return ref_ ? ref_->get_int(name) : 0;
+        return checked_object_call(ref_, [&] { return ref_->get_int(name); });
     }
 
     std::string getString(const std::string& name) const {
-        return ref_ ? ref_->get_string(name) : "";
+        return checked_object_call(ref_, [&] { return ref_->get_string(name); });
     }
 
     double getDouble(const std::string& name) const {
-        return ref_ ? ref_->get_double(name) : 0.0;
+        return checked_object_call(ref_, [&] { return ref_->get_double(name); });
     }
 
     bool getBool(const std::string& name) const {
-        return ref_ ? ref_->get_bool(name) : false;
+        return checked_object_call(ref_, [&] { return ref_->get_bool(name); });
+    }
+
+    val getData(const std::string& name) const {
+        const auto bytes = checked_object_call(ref_, [&] { return ref_->get_data(name); });
+        // Copy into JS-owned storage; a view over the temporary vector would
+        // dangle at return and could also detach when Wasm memory grows.
+        val result = val::global("Uint8Array").new_(bytes.size());
+        if (!bytes.empty()) result.call<void>("set", val(typed_memory_view(bytes.size(), bytes.data())));
+        return result;
     }
 
     bool hasValue(const std::string& name) const {
-        return ref_ ? ref_->has_value(name) : false;
+        return checked_object_call(ref_, [&] { return ref_->has_value(name); });
     }
+
+    val getUnion(const std::string& name) const;
+    void setUnion(const std::string& name, const val& value);
 
     // Setters
     void setInt(const std::string& name, int64_t value) {
-        if (ref_) ref_->set_int(name, value);
+        checked_object_call(ref_, [&] { ref_->set_int(name, value); });
     }
 
     void setString(const std::string& name, const std::string& value) {
-        if (ref_) ref_->set_string(name, value);
+        checked_object_call(ref_, [&] { ref_->set_string(name, value); });
     }
 
     void setDouble(const std::string& name, double value) {
-        if (ref_) ref_->set_double(name, value);
+        checked_object_call(ref_, [&] { ref_->set_double(name, value); });
     }
 
     void setBool(const std::string& name, bool value) {
-        if (ref_) ref_->set_bool(name, value);
+        checked_object_call(ref_, [&] { ref_->set_bool(name, value); });
+    }
+
+    void setData(const std::string& name, const val& value) {
+        if (!value.instanceof(val::global("Uint8Array"))) throw_js_error("Byte fields require Uint8Array");
+        const auto bytes = convertJSArrayToNumberVector<uint8_t>(value);
+        checked_object_call(ref_, [&] { ref_->set_data(name, bytes); });
     }
 
     void setNil(const std::string& name) {
-        if (ref_) ref_->set_nil(name);
+        checked_object_call(ref_, [&] { ref_->set_nil(name); });
     }
 
     // Link handling - the key methods!
     JsDynamicObject getObject(const std::string& name) const {
-        if (!ref_) return JsDynamicObject();
-        auto* linked = ref_->get_object(name);
-        if (!linked) return JsDynamicObject();
-        return JsDynamicObject(linked);
+        return checked_object_call(ref_, [&] {
+            auto* linked = ref_->get_object(name);
+            return linked ? JsDynamicObject(linked) : JsDynamicObject();
+        }, false); // Core's link methods throw; they do not reset the scalar error slot.
     }
 
     void setObject(const std::string& name, JsDynamicObject& value) {
-        if (ref_ && value.ref_) {
+        if (!value.isValid()) throw_js_error("Invalid linked object");
+        checked_object_call(ref_, [&] {
             ref_->set_object(name, *value.ref_);
-        }
+        }, false);
     }
 
     // Get a link list property - forward declaration, implemented after JsLinkList
@@ -819,9 +925,178 @@ JsLinkList JsDynamicObject::getLinkList(const std::string& name) const {
 // Helper: Convert JS object to property_descriptor
 // ============================================================================
 
+static void require_identifier(const std::string& value) {
+    auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; };
+    if (value.empty() || value.size() > 128 || !letter(value.front()) ||
+        value == "__proto__" || value == "prototype" || value == "constructor")
+        throw std::invalid_argument("Invalid union storage identifier");
+    for (char c : value) if (!letter(c) && !(c >= '0' && c <= '9'))
+        throw std::invalid_argument("Invalid union storage identifier");
+}
+
+static std::string storage_name(std::string name) {
+    for (auto& c : name) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    return name;
+}
+
+static std::vector<std::string> record_fields(const val& value, const std::unordered_set<std::string>* allowed = nullptr) {
+    const auto object = val::global("Object");
+    if (value.isNull() || value.typeOf().as<std::string>() != "object" ||
+        val::global("Array").call<bool>("isArray", value)) throw std::invalid_argument("Expected a plain record");
+    const auto prototype = object.call<val>("getPrototypeOf", value);
+    if (!prototype.isNull() && !prototype.strictlyEquals(object["prototype"]))
+        throw std::invalid_argument("Expected a plain record");
+    if (object.call<val>("getOwnPropertySymbols", value)["length"].as<size_t>() != 0)
+        throw std::invalid_argument("Symbol fields are unsupported");
+    const auto descriptors = object.call<val>("getOwnPropertyDescriptors", value);
+    const auto names = object.call<val>("getOwnPropertyNames", value);
+    const auto count = names["length"].as<size_t>();
+    if (count > 256) throw std::invalid_argument("Too many record fields");
+    std::vector<std::string> result;
+    for (size_t i = 0; i < count; ++i) {
+        auto name = names[i].as<std::string>();
+        const auto descriptor = descriptors[name];
+        if (!object.call<bool>("hasOwn", descriptor, val("value")) || !descriptor["enumerable"].as<bool>())
+            throw std::invalid_argument("Accessor or hidden fields are unsupported");
+        if (allowed && !allowed->count(name)) throw std::invalid_argument("Unsupported record field: " + name);
+        result.push_back(std::move(name));
+    }
+    return result;
+}
+
+static size_t bounded_array(const val& value, size_t maximum) {
+    if (!val::global("Array").call<bool>("isArray", value)) throw std::invalid_argument("Expected an array");
+    const auto count = value["length"].as<size_t>();
+    if (count > maximum) throw std::invalid_argument("Array exceeds the union descriptor limit");
+    const auto object = val::global("Object");
+    const auto names = object.call<val>("getOwnPropertyNames", value);
+    if (names["length"].as<size_t>() != count + 1 ||
+        object.call<val>("getOwnPropertySymbols", value)["length"].as<size_t>() != 0)
+        throw std::invalid_argument("Sparse or decorated arrays are unsupported");
+    for (size_t i = 0; i < count; ++i) {
+        const auto descriptor = object.call<val>("getOwnPropertyDescriptor", value, val(std::to_string(i)));
+        if (descriptor.isUndefined() || !object.call<bool>("hasOwn", descriptor, val("value")) ||
+            !descriptor["enumerable"].as<bool>()) throw std::invalid_argument("Sparse or accessor arrays are unsupported");
+    }
+    return count;
+}
+
+static void validate_union_descriptor(const property_descriptor& property) {
+    if (!property.is_union || property.kind != property_kind::union_type || property.type != column_type::text ||
+        !property.nullable || property.target_table != property.union_desc.union_table_name ||
+        property.is_vector || property.is_full_text || property.is_indexed || property.no_history)
+        throw std::invalid_argument("Unsupported union property descriptor");
+    require_identifier(property.name);
+    require_identifier(property.target_table);
+    if (sqlite3_keyword_check(property.target_table.c_str(), static_cast<int>(property.target_table.size())))
+        throw std::invalid_argument("Union storage names cannot be SQL keywords");
+    if (property.union_desc.cases.empty() || property.union_desc.cases.size() > 128)
+        throw std::invalid_argument("Union requires a bounded nonempty case list");
+    std::unordered_set<std::string> cases;
+    std::unordered_set<std::string> columns{"id", "globalid", "case"};
+    for (const auto& item : property.union_desc.cases) {
+        require_identifier(item.case_name);
+        if (!cases.insert(item.case_name).second || item.values.size() > 64)
+            throw std::invalid_argument("Duplicate union case or too many fields");
+        std::unordered_set<std::string> keys;
+        for (size_t i = 0; i < item.values.size(); ++i) {
+            const auto& field = item.values[i];
+            if (field.is_link || !field.link_target.empty() ||
+                (field.type != column_type::text && field.type != column_type::integer))
+                throw std::invalid_argument("Only text and Int64 union fields are supported");
+            if (field.param_name.empty() && item.values.size() != 1)
+                throw std::invalid_argument("Multiple union values require explicit labels");
+            if (!field.param_name.empty()) require_identifier(field.param_name);
+            const auto key = field.param_name.empty() ? "_0" : field.param_name;
+            const auto column = field.param_name.empty() ? item.case_name : item.case_name + "__" + key;
+            require_identifier(column);
+            if (sqlite3_keyword_check(column.c_str(), static_cast<int>(column.size())))
+                throw std::invalid_argument("Union value column cannot be a SQL keyword");
+            if (!keys.insert(key).second || !columns.insert(storage_name(column)).second)
+                throw std::invalid_argument("Union fields collide in physical storage");
+        }
+    }
+}
+
+static property_descriptor union_property(dynamic_object_ref* ref, const std::string& name) {
+    if (!ref || !ref->valid()) throw std::invalid_argument("Invalid native object");
+    const auto* descriptor = ref->get()->get_property_descriptor(name);
+    if (!descriptor) throw std::invalid_argument("Unknown union property");
+    auto result = *descriptor;
+    validate_union_descriptor(result);
+    return result;
+}
+
+static const union_case& union_case_for(const property_descriptor& property, const std::string& name) {
+    for (const auto& item : property.union_desc.cases) if (item.case_name == name) return item;
+    throw std::invalid_argument("Unknown union case");
+}
+
+val JsDynamicObject::getUnion(const std::string& name) const {
+    const auto property = union_property(ref_, name);
+    const auto stored = checked_object_call(ref_, [&] { return ref_->get_union(name); }, false);
+    if (stored.case_name.empty()) {
+        if (ref_->get()->lattice && hasValue(name) && !getString(name).empty())
+            throw std::runtime_error("Union reference has no readable value");
+        return val::null();
+    }
+    const auto& active = union_case_for(property, stored.case_name);
+    if (stored.all_keys().size() != active.values.size()) throw std::runtime_error("Stored union fields do not match its active case");
+    val fields = val::object();
+    for (const auto& field : active.values) {
+        const auto key = field.param_name.empty() ? "_0" : field.param_name;
+        if (field.type == column_type::text && stored.has_string(key)) fields.set(key, stored.get_string(key));
+        else if (field.type == column_type::integer && stored.has_int(key)) fields.set(key, stored.get_int(key));
+        else throw std::runtime_error("Missing or mistyped stored union field");
+    }
+    val result = val::object();
+    result.set("case", stored.case_name);
+    result.set("fields", fields);
+    return result;
+}
+
+void JsDynamicObject::setUnion(const std::string& name, const val& value) {
+    const auto property = union_property(ref_, name);
+    union_value stored;
+    if (!value.isNull()) {
+        static const std::unordered_set<std::string> allowed{"case", "fields"};
+        if (record_fields(value, &allowed).size() != 2 || !value["case"].isString())
+            throw std::invalid_argument("Union value requires case and fields");
+        stored.case_name = value["case"].as<std::string>();
+        const auto& active = union_case_for(property, stored.case_name);
+        const auto fields = value["fields"];
+        auto names = record_fields(fields);
+        if (names.size() != active.values.size()) throw std::invalid_argument("Union fields must match the active case exactly");
+        for (const auto& field : active.values) {
+            const auto key = field.param_name.empty() ? "_0" : field.param_name;
+            if (std::find(names.begin(), names.end(), key) == names.end()) throw std::invalid_argument("Missing union field");
+            const auto item = fields[key];
+            if (field.type == column_type::text && item.isString()) stored.set_string(key, item.as<std::string>());
+            else if (field.type == column_type::integer && item.typeOf().as<std::string>() == "bigint" &&
+                val::global("BigInt").call<val>("asIntN", 64, item).strictlyEquals(item)) stored.set_int(key, item.as<int64_t>());
+            else throw std::invalid_argument("Union field requires text or an exact signed Int64 BigInt");
+        }
+    }
+    checked_object_call(ref_, [&] { ref_->set_union(name, stored); }, false);
+}
+
 property_descriptor js_to_property_descriptor(const val& prop) {
     property_descriptor desc;
+
+    // Silently dropping storage policy or treating a future kind as text can
+    // migrate an existing file to the wrong schema. Refuse before Core opens it.
+    static const std::unordered_set<std::string> supported_fields = {
+        "name", "type", "kind", "targetTable", "nullable", "isVector", "isFullText", "isIndexed", "logicalNullable", "unionCases", "noHistory"
+    };
+    record_fields(prop, &supported_fields);
+    if (!prop["name"].isString()) throw std::invalid_argument("Property name requires a string");
     desc.name = prop["name"].as<std::string>();
+    const std::string kind_str = prop["kind"].isUndefined() ? "primitive" : prop["kind"].as<std::string>();
+    if (kind_str == "link") desc.kind = property_kind::link;
+    else if (kind_str == "list") desc.kind = property_kind::list;
+    else if (kind_str == "primitive") desc.kind = property_kind::primitive;
+    else if (kind_str == "union") desc.kind = property_kind::union_type;
+    else throw std::invalid_argument("Unsupported property kind: " + kind_str);
 
     std::string type_str = prop["type"].as<std::string>();
     if (type_str == "string") desc.type = column_type::text;
@@ -830,18 +1105,57 @@ property_descriptor js_to_property_descriptor(const val& prop) {
     else if (type_str == "date") desc.type = column_type::real;  // Dates stored as Unix timestamps
     else if (type_str == "bool" || type_str == "boolean") desc.type = column_type::integer;
     else if (type_str == "blob" || type_str == "data") desc.type = column_type::blob;
-    else desc.type = column_type::text;
+    // Preserve the legacy relationship descriptor spelling; it is never a
+    // supported primitive scalar and relationship tables remain Core-owned.
+    else if (type_str == "object" && (kind_str == "link" || kind_str == "list")) desc.type = column_type::text;
+    else throw std::invalid_argument("Unsupported property type: " + type_str);
 
-    std::string kind_str = prop["kind"].isUndefined() ? "primitive" : prop["kind"].as<std::string>();
-    if (kind_str == "link") desc.kind = property_kind::link;
-    else if (kind_str == "list") desc.kind = property_kind::list;
-    else desc.kind = property_kind::primitive;
-
+    for (const auto* flag : {"nullable", "isVector", "isFullText", "isIndexed", "noHistory"}) {
+        if (!prop[flag].isUndefined() && prop[flag].typeOf().as<std::string>() != "boolean")
+            throw std::invalid_argument("Property flags require boolean values");
+    }
     desc.target_table = prop["targetTable"].isUndefined() ? "" : prop["targetTable"].as<std::string>();
     desc.nullable = prop["nullable"].isUndefined() ? true : prop["nullable"].as<bool>();
     desc.is_vector = prop["isVector"].isUndefined() ? false : prop["isVector"].as<bool>();
     desc.is_full_text = prop["isFullText"].isUndefined() ? false : prop["isFullText"].as<bool>();
     desc.is_indexed = prop["isIndexed"].isUndefined() ? false : prop["isIndexed"].as<bool>();
+    if (val::global("Object").call<bool>("hasOwn", prop, val("noHistory")) &&
+        (kind_str != "primitive" || prop["noHistory"].typeOf().as<std::string>() != "boolean"))
+        throw std::invalid_argument("noHistory requires a primitive property and boolean flag");
+    desc.no_history = prop["noHistory"].isUndefined() ? false : prop["noHistory"].as<bool>();
+
+    if (kind_str == "union") {
+        record_fields(prop, &supported_fields);
+        if (prop["logicalNullable"].typeOf().as<std::string>() != "boolean" ||
+            prop["nullable"].typeOf().as<std::string>() != "boolean" || type_str != "string")
+            throw std::invalid_argument("Union requires explicit physical and logical nullability");
+        desc.is_union = true;
+        desc.union_desc.union_table_name = desc.target_table;
+        const auto cases = prop["unionCases"];
+        const auto count = bounded_array(cases, 128);
+        static const std::unordered_set<std::string> case_fields{"name", "values"};
+        static const std::unordered_set<std::string> value_fields{"paramName", "type"};
+        for (size_t i = 0; i < count; ++i) {
+            const auto item = cases[i];
+            if (record_fields(item, &case_fields).size() != 2 || !item["name"].isString()) throw std::invalid_argument("Invalid union case descriptor");
+            union_case active;
+            active.case_name = item["name"].as<std::string>();
+            const auto values = item["values"];
+            const auto value_count = bounded_array(values, 64);
+            for (size_t j = 0; j < value_count; ++j) {
+                const auto field = values[j];
+                if (record_fields(field, &value_fields).size() != 2 || !field["paramName"].isString() || !field["type"].isString())
+                    throw std::invalid_argument("Invalid union field descriptor");
+                const auto type = field["type"].as<std::string>();
+                if (type != "string" && type != "int") throw std::invalid_argument("Unsupported union field type");
+                active.values.push_back({field["paramName"].as<std::string>(), type == "string" ? column_type::text : column_type::integer, false, ""});
+            }
+            desc.union_desc.cases.push_back(std::move(active));
+        }
+        validate_union_descriptor(desc);
+    } else if (!prop["logicalNullable"].isUndefined() || !prop["unionCases"].isUndefined()) {
+        throw std::invalid_argument("Union metadata requires a union property");
+    }
 
     return desc;
 }
@@ -852,17 +1166,35 @@ property_descriptor js_to_property_descriptor(const val& prop) {
 
 SchemaVector js_to_schema_vector(const val& schemas) {
     SchemaVector result;
+    std::unordered_set<std::string> tables;
+    std::unordered_map<std::string, std::string> union_signatures;
 
-    auto length = schemas["length"].as<size_t>();
+    auto length = bounded_array(schemas, 512);
     for (size_t i = 0; i < length; i++) {
         val schema = schemas[i];
         swift_schema_entry entry;
         entry.table_name = schema["tableName"].as<std::string>();
+        if (!tables.insert(storage_name(entry.table_name)).second) throw std::invalid_argument("Duplicate model table");
 
         val props = schema["properties"];
-        auto props_length = props["length"].as<size_t>();
+        auto props_length = bounded_array(props, 512);
+        std::unordered_set<std::string> physical_properties{"id", "globalid"};
         for (size_t j = 0; j < props_length; j++) {
             auto desc = js_to_property_descriptor(props[j]);
+            if (!physical_properties.insert(storage_name(desc.name)).second)
+                throw std::invalid_argument("Duplicate model property");
+            if (desc.is_union) {
+                nlohmann::json signature = nlohmann::json::array();
+                for (const auto& active : desc.union_desc.cases) {
+                    nlohmann::json fields = nlohmann::json::array();
+                    for (const auto& field : active.values) fields.push_back({field.param_name, static_cast<int>(field.type)});
+                    signature.push_back({active.case_name, fields});
+                }
+                const auto name = storage_name(desc.target_table);
+                const auto encoded = desc.target_table + ":" + signature.dump();
+                auto [found, inserted] = union_signatures.emplace(name, encoded);
+                if (!inserted && found->second != encoded) throw std::invalid_argument("Conflicting shared union table descriptors");
+            }
             entry.properties[desc.name] = desc;
         }
 
@@ -884,6 +1216,10 @@ SchemaVector js_to_schema_vector(const val& schemas) {
         }
 
         result.push_back(entry);
+    }
+
+    for (const auto& [name, signature] : union_signatures) {
+        if (tables.count(name)) throw std::invalid_argument("Union table collides with a model table");
     }
 
     return result;
@@ -1048,7 +1384,7 @@ val dynamic_object_ref_to_js(dynamic_object_ref* obj, const SwiftSchema* schema)
 // ============================================================================
 
 // Helper to throw JS Error from C++ exception
-void throw_js_error(const std::string& msg) {
+[[noreturn]] void throw_js_error(const std::string& msg) {
     val error = val::global("Error").new_(msg);
     throw error;
 }
@@ -1190,8 +1526,9 @@ public:
 
             if (!migration_callback.isNull() && !migration_callback.isUndefined()) {
                 // Use create_with_migration
-                auto* stored_callback = new val(migration_callback);
+                auto stored_callback = std::make_shared<val>(migration_callback);
                 swift_migration_block_t block = [stored_callback](swift_migration_context_ref* ctx) {
+                    ActiveMigration active(ctx);
                     // Convert swift_migration_context_ref to JS object
                     val js_ctx = val::object();
 
@@ -1214,19 +1551,17 @@ public:
                     }
                     js_ctx.set("pendingChanges", js_changes);
 
-                    // hasChangesFor(tableName)
-                    js_ctx.set("hasChangesFor", val::module_property("_migration_has_changes_for"));
-
                     // renameProperty(tableName, old, new)
-                    js_ctx.set("_ctx_ptr", val(reinterpret_cast<uintptr_t>(ctx)));
+                    // Preserve the internal JS field name; the value is an expiring token, not a pointer.
+                    js_ctx.set("_ctx_ptr", val(active.token));
                     js_ctx.set("renameProperty", val::module_property("_migration_rename_property"));
                     js_ctx.set("deleteAll", val::module_property("_migration_delete_all"));
                     js_ctx.set("executeSql", val::module_property("_migration_execute_sql"));
 
-                    (*stored_callback)(js_ctx);
+                    auto result = val::take_ownership(lattice_call_migration_js(stored_callback->as_handle(), js_ctx.as_handle()));
+                    if (!result["ok"].as<bool>()) throw std::runtime_error(result["error"].as<std::string>());
                 };
                 ref_ = swift_lattice_ref::create_with_migration(config, schema_vec, block);
-                delete stored_callback;
             } else {
                 ref_ = swift_lattice_ref::create(config, schema_vec);
             }
@@ -1320,14 +1655,29 @@ public:
         return val::null();
     }
 
-    // Query objects from a table
+    // Explicit-model callers hydrate managed rows by identity. They must not
+    // recursively materialize linked graphs through the legacy plain converter.
+    val objectIdentities(const std::string& table_name,
+                         const val& where, const val& order, const val& limit,
+                         const val& offset, const val& group, const val& distinct) {
+        return queryObjects(table_name, where, order, limit, offset, group, distinct, true);
+    }
+
     val objects(const std::string& table_name,
+                const val& where, const val& order, const val& limit,
+                const val& offset, const val& group, const val& distinct) {
+        return queryObjects(table_name, where, order, limit, offset, group, distinct, false);
+    }
+
+    // Query objects from a table; identity-only results never touch linked rows.
+    val queryObjects(const std::string& table_name,
                 const val& where_clause,
                 const val& order_by,
                 const val& limit,
                 const val& offset,
                 const val& group_by,
-                const val& distinct_by) {
+                const val& distinct_by,
+                bool identities_only) {
         try {
             OptionalString where = where_clause.isNull() || where_clause.isUndefined()
                 ? std::nullopt : std::optional<std::string>(where_clause.as<std::string>());
@@ -1347,12 +1697,14 @@ public:
 
             val arr = val::array();
             for (size_t i = 0; i < results.size(); i++) {
-                auto* obj_ref = new dynamic_object_ref(results[i]);
-                val js_obj = dynamic_object_to_js(obj_ref, schema);
+                val js_obj = val::object();
+                if (!identities_only) {
+                    auto obj_ref = std::make_unique<dynamic_object_ref>(results[i]);
+                    js_obj = dynamic_object_to_js(obj_ref.get(), schema);
+                }
                 js_obj.set("id", results[i].id());
                 js_obj.set("globalId", results[i].global_id());
                 arr.call<void>("push", js_obj);
-                delete obj_ref;
             }
             return arr;
         } catch (const std::exception& e) {
@@ -1796,74 +2148,21 @@ public:
     // Returns JSON array of applied global IDs
     std::string receive(const std::string& json) {
         try {
-            auto event = server_sent_event::from_json(json);
-            if (!event) return "[]";
-
-            std::vector<std::string> applied_ids;
-
-            if (event->event_type == server_sent_event::type::audit_log) {
-
-                // Disable sync triggers while applying
-                ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 1 WHERE id = 1");
-
-                for (const auto& entry : event->audit_logs) {
-                    // Skip if already in AuditLog (idempotent)
-                    auto existing = ref_->get()->db().query(
-                        "SELECT id FROM AuditLog WHERE globalId = ?",
-                        {entry.global_id}
-                    );
-                    if (!existing.empty()) continue;
-
-                    // Get schema for table
-                    const auto* props = ref_->get()->get_properties_for_table(entry.table_name);
-                    std::unordered_map<std::string, column_type> schema;
-                    if (props) {
-                        for (const auto& [name, desc] : *props) {
-                            schema[name] = desc.type;
-                        }
-                    }
-
-                    // Generate and execute SQL for data table
-                    auto [sql, params] = entry.generate_instruction(schema);
-                    if (!sql.empty()) {
-                        try {
-                            ref_->get()->db().execute(sql, params);
-
-                            // Record the audit entry as from remote (for eventsAfter queries)
-                            std::string insert_sql = R"(
-                                INSERT INTO AuditLog (globalId, tableName, operation, rowId, globalRowId,
-                                    changedFields, changedFieldsNames, timestamp, isFromRemote, isSynchronized)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
-                            )";
-                            ref_->get()->db().execute(insert_sql, {
-                                entry.global_id,
-                                entry.table_name,
-                                entry.operation,
-                                entry.row_id,
-                                entry.global_row_id,
-                                entry.changed_fields_to_json(),
-                                entry.changed_fields_names_to_json(),
-                                entry.timestamp
-                            });
-
-                            applied_ids.push_back(entry.global_id);
-                        } catch (const std::exception& e) {
-                        }
-                    }
-                }
-
-                // Re-enable sync triggers
-                ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 0 WHERE id = 1");
-
-            } else if (event->event_type == server_sent_event::type::ack) {
-                mark_audit_entries_synced(*ref_->get(), event->acked_ids);
-                applied_ids = event->acked_ids;
+            if (!ref_) throw std::runtime_error("Lattice has been released");
+            // Core owns apply transactions, NoHistory/null guards, duplicate
+            // receipts and post-commit observation. ACK frames mark local
+            // entries synchronized and return no IDs: never ACK an ACK.
+            const ByteVector bytes(json.begin(), json.end());
+            const auto applied_ids = ref_->get()->receive_sync_data(bytes);
+            if (const auto error = ref_->get()->last_receive_error()) {
+                printf("[receive] Error: %s\n", error->c_str());
             }
-
-            nlohmann::json result = applied_ids;
-            return result.dump();
+            return nlohmann::json(applied_ids).dump();
         } catch (const std::exception& e) {
             printf("[receive] Error: %s\n", e.what());
+            return "[]";
+        } catch (...) {
+            printf("[receive] Unknown error\n");
             return "[]";
         }
     }
@@ -2455,7 +2754,80 @@ static void enable_shared_cache() {
     printf("[WASM] SQLite shared cache enabled globally\n");
 }
 
+// Keep versioned open failures inside C++ until all constructor, exception and
+// Embind argument owners can be released. JS throws only after this tagged result
+// has returned; raw C++ exception pointers never become the public error value.
+static val open_versioned_lattice(const std::string& path, const val& schemas,
+                                  const std::string& url, const std::string& token,
+                                  int32_t version, const val& callback) {
+    val result = val::object();
+    try {
+        auto db = std::make_shared<JsLattice>(path, schemas, url, token, version, callback);
+        result.set("db", db);
+        result.set("ok", true);
+    } catch (const val& error) {
+        // The legacy constructor translates std::exception to a C++-thrown JS
+        // Error value. Catch it here so its C++ exception allocation is freed.
+        result.set("ok", false);
+        result.set("error", error["message"].as<std::string>());
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    }
+    return result;
+}
+
+// Finish unwinding C++ owners and Embind arguments before throwing in JS. A
+// C++-thrown emscripten::val is otherwise exposed as a numeric exception pointer;
+// val.throw_() instead skips C++ cleanup. This tagged boundary avoids both.
+template <typename Operation>
+static val object_operation_result(Operation operation) {
+    val result = val::object();
+    try {
+        if constexpr (std::is_void_v<std::invoke_result_t<Operation>>) {
+            operation();
+        } else {
+            result.set("value", operation());
+        }
+        result.set("ok", true);
+    } catch (const val& error) {
+        result.set("ok", false);
+        result.set("error", error["message"].as<std::string>());
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    } catch (...) {
+        result.set("ok", false);
+        result.set("error", "Native object operation failed");
+    }
+    return result;
+}
+
+EM_JS(void, install_object_result_wrappers, (), {
+    function install(prototype, names) {
+        for (const name of names) {
+            const native = prototype['_result_' + name];
+            prototype[name] = function(...args) {
+                const result = native.apply(this, args);
+                if (!result.ok) throw new Error(result.error);
+                return result.value;
+            };
+        }
+    }
+    install(Module['DynamicObject'].prototype, [
+        'getInt', 'getString', 'getDouble', 'getBool', 'getData', 'hasValue',
+        'setInt', 'setString', 'setDouble', 'setBool', 'setData', 'setNil',
+        'getObject', 'setObject', 'getLinkList', 'getUnion', 'setUnion'
+    ]);
+    install(Module['Lattice'].prototype, ['addObject', 'objectIdentities']);
+});
+
 EMSCRIPTEN_BINDINGS(lattice) {
+    function("explicitUnionVersion", optional_override([]() { return 1; }));
+    function("explicitNoHistoryVersion", optional_override([]() { return 1; }));
+    function("_migration_rename_property", &migration_rename_property);
+    function("_migration_delete_all", &migration_delete_all);
+    function("_migration_execute_sql", &migration_execute_sql);
     function("_lifecycleDiagnostics", &JsLattice::lifecycleDiagnostics);
     // Version check
     function("getWasmVersion", &getWasmVersion);
@@ -2488,31 +2860,77 @@ EMSCRIPTEN_BINDINGS(lattice) {
     class_<JsDynamicObject>("DynamicObject")
         .constructor<>()
         .function("isValid", &JsDynamicObject::isValid)
-        .function("getInt", &JsDynamicObject::getInt)
-        .function("getString", &JsDynamicObject::getString)
-        .function("getDouble", &JsDynamicObject::getDouble)
-        .function("getBool", &JsDynamicObject::getBool)
-        .function("hasValue", &JsDynamicObject::hasValue)
-        .function("setInt", &JsDynamicObject::setInt)
-        .function("setString", &JsDynamicObject::setString)
-        .function("setDouble", &JsDynamicObject::setDouble)
-        .function("setBool", &JsDynamicObject::setBool)
-        .function("setNil", &JsDynamicObject::setNil)
-        .function("getObject", &JsDynamicObject::getObject)
-        .function("setObject", &JsDynamicObject::setObject)
-        .function("getLinkList", &JsDynamicObject::getLinkList);
+        .function("_result_getInt", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getInt(name); });
+        }))
+        .function("_result_getString", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getString(name); });
+        }))
+        .function("_result_getDouble", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getDouble(name); });
+        }))
+        .function("_result_getBool", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getBool(name); });
+        }))
+        .function("_result_getData", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getData(name); });
+        }))
+        .function("_result_hasValue", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.hasValue(name); });
+        }))
+        .function("_result_setInt", optional_override([](JsDynamicObject& object, const std::string& name, int64_t value) {
+            return object_operation_result([&] { object.setInt(name, value); });
+        }))
+        .function("_result_setString", optional_override([](JsDynamicObject& object, const std::string& name, const std::string& value) {
+            return object_operation_result([&] { object.setString(name, value); });
+        }))
+        .function("_result_setDouble", optional_override([](JsDynamicObject& object, const std::string& name, double value) {
+            return object_operation_result([&] { object.setDouble(name, value); });
+        }))
+        .function("_result_setBool", optional_override([](JsDynamicObject& object, const std::string& name, bool value) {
+            return object_operation_result([&] { object.setBool(name, value); });
+        }))
+        .function("_result_setData", optional_override([](JsDynamicObject& object, const std::string& name, const val& value) {
+            return object_operation_result([&] { object.setData(name, value); });
+        }))
+        .function("_result_setNil", optional_override([](JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { object.setNil(name); });
+        }))
+        .function("_result_getObject", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getObject(name); });
+        }))
+        .function("_result_setObject", optional_override([](JsDynamicObject& object, const std::string& name, JsDynamicObject& value) {
+            return object_operation_result([&] { object.setObject(name, value); });
+        }))
+        .function("_result_getLinkList", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getLinkList(name); });
+        }))
+        .function("_result_getUnion", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getUnion(name); });
+        }))
+        .function("_result_setUnion", optional_override([](JsDynamicObject& object, const std::string& name, const val& value) {
+            return object_operation_result([&] { object.setUnion(name, value); });
+        }));
 
     class_<JsLattice>("Lattice")
+        .smart_ptr<std::shared_ptr<JsLattice>>("LatticeHandle")
         .constructor<std::string, val>()
         .constructor<std::string, val, bool>()
         .constructor<std::string, val, std::string, std::string>()
         .constructor<std::string, val, std::string, std::string, int32_t, val>()
         .function("add", &JsLattice::add)
-        .function("addObject", &JsLattice::addObject)
+        .function("_result_addObject", optional_override([](JsLattice& database, const std::string& table, JsDynamicObject& object) {
+            return object_operation_result([&] { return database.addObject(table, object); });
+        }))
         .function("find", &JsLattice::find)
         .function("findObject", &JsLattice::findObject)
         .function("findByGlobalId", &JsLattice::findByGlobalId)
         .function("objects", &JsLattice::objects)
+        .function("_result_objectIdentities", optional_override([](JsLattice& database, const std::string& table,
+                    const val& where, const val& order, const val& limit, const val& offset,
+                    const val& group, const val& distinct) {
+            return object_operation_result([&] { return database.objectIdentities(table, where, order, limit, offset, group, distinct); });
+        }))
         .function("count", &JsLattice::count)
         .function("remove", &JsLattice::remove)
         .function("beginWrite", &JsLattice::beginWrite)
@@ -2559,4 +2977,6 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("compactAuditLog", &JsLattice::compactAuditLog)
         .function("safeCompactAuditLog", &JsLattice::safeCompactAuditLog)
         .function("generateHistory", &JsLattice::generateHistory);
+    function("_openVersioned", &open_versioned_lattice);
+    install_object_result_wrappers();
 }

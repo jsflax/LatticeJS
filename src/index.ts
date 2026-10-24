@@ -2,6 +2,8 @@
 export { Lattice, LogLevel } from './lattice';
 export { Results } from './results';
 export { List } from './list';
+export { defineModels } from './explicit-models';
+export type { ExplicitPropertyDescriptor, ExplicitModelDescriptor, ExplicitModelsDefinition, ExplicitValues, ExplicitModelConstructor, DefinedModels } from './explicit-models';
 export {
     model, link, list, nullable,
     indexed,
@@ -32,6 +34,8 @@ export type {
     ColumnType,
     PropertyKind,
     PropertyDescriptor,
+    UnionCaseDescriptor,
+    UnionValue,
     Constraint,
     SchemaEntry,
     CollectionChange,
