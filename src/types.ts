@@ -1,6 +1,23 @@
 // Core types for LatticeJS
 
 export type ColumnType = 'string' | 'int' | 'float' | 'bool' | 'blob' | 'date';
+
+export interface SyncAdmissionContext {
+    readonly signal: AbortSignal;
+    readonly connectionGeneration: number;
+    /** Stable configured endpoint, excluding Core's noncredential resume cursor. */
+    readonly websocketUrl: string;
+    readonly instanceId: string;
+}
+
+export interface SyncConfiguration {
+    websocketUrl: string;
+    authToken?: string;
+    /** Resolve after server-side admission, without returning a credential. Runs before every upgrade. */
+    beforeConnect?: (context: SyncAdmissionContext) => Promise<void>;
+    /** Cancels pending admission and closes the transport for this owner. */
+    signal?: AbortSignal;
+}
 export type PropertyKind = 'primitive' | 'link' | 'list' | 'union';
 
 export interface UnionCaseDescriptor {
@@ -83,6 +100,7 @@ export interface LatticeWasmModule {
     /** Exact first union descriptor/value capability; absent in older builds. */
     explicitUnionVersion?: () => number;
     explicitNoHistoryVersion?: () => number;
+    syncAdmissionVersion?: () => number;
 }
 
 export interface LatticeWasm {

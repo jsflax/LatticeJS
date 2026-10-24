@@ -46,6 +46,8 @@ export type {
     LatticeWasm,
     LatticeWasmModule,
     SyncProgress,
+    SyncConfiguration,
+    SyncAdmissionContext,
     SyncStateInfo,
     LatticeCloseOptions,
     LatticeCloseResult,

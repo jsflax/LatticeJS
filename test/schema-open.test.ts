@@ -32,6 +32,58 @@ async function library() {
 }
 
 describe('schema-aware opening', () => {
+    it('rechecks native ownership after OPFS awaits before any restore truncate or write', async () => {
+        const { Lattice, Note } = await library();
+        let resume!: (value: ArrayBuffer) => void;
+        const bytes = new Promise<ArrayBuffer>(resolve => { resume = resolve; });
+        const arrayBuffer = vi.fn(() => bytes);
+        vi.stubGlobal('navigator', { storage: { getDirectory: async () => ({
+            getDirectoryHandle: async () => ({ getFileHandle: async () => ({ getFile: async () => ({ arrayBuffer }) }) }),
+        }) } });
+        const opening = Lattice.open('./:memory:live-owner', [Note]);
+        await vi.waitFor(() => expect(arrayBuffer).toHaveBeenCalledOnce());
+        // A live admitted owner appeared while the legacy OPFS read was pending.
+        control.restoreCheck = () => ({ ok: false, error: 'one live Lattice owner per store path' });
+        resume(new Uint8Array([1, 2, 3]).buffer);
+        await expect(opening).rejects.toThrow(/one live Lattice owner/);
+        expect(control.restoreWrites ?? 0).toBe(0); expect(opens).toHaveLength(0);
+    });
+
+    it('refuses admitted persistence before WASM, OPFS access, or MEMFS restore', async () => {
+        const { Lattice, Note } = await library();
+        const getDirectory = vi.fn();
+        vi.stubGlobal('navigator', { storage: { getDirectory } });
+        const restore = vi.spyOn(Lattice as any, 'restoreSnapshot');
+        await expect(Lattice.open('admitted-persistent.db', [Note], {
+            sync: { websocketUrl: 'wss://test.invalid/browser/sync', beforeConnect: async () => {} },
+        })).rejects.toThrow(/memory-only/);
+        expect(getDirectory).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
+        expect(control.factories ?? 0).toBe(0); expect(opens).toHaveLength(0);
+    });
+
+    it('refuses admitted SQLite URI aliases before native loading', async () => {
+        const { Lattice, Note } = await library();
+        await expect(Lattice.open('file:admission.db?mode=rwc', [Note], {
+            sync: { websocketUrl: 'wss://test.invalid/browser/sync', beforeConnect: async () => {} },
+        })).rejects.toThrow(/file: URI/);
+        expect(control.factories ?? 0).toBe(0); expect(opens).toHaveLength(0);
+    });
+
+    it('refuses admitted sync on an old runtime before native creation or invoking the hook', async () => {
+        const { Lattice, Note } = await library();
+        const hook = vi.fn(async () => {});
+        await expect(Lattice.open(':memory:admission-old', [Note], {
+            sync: { websocketUrl: 'wss://test.invalid/browser/sync', beforeConnect: hook },
+        })).rejects.toThrow(/syncAdmissionVersion/);
+        expect(opens).toHaveLength(0); expect(hook).not.toHaveBeenCalled();
+    });
+    it('rejects a bearer token combined with admission before loading WASM', async () => {
+        const { Lattice, Note } = await library();
+        await expect(Lattice.open(':memory:admission-token', [Note], {
+            sync: { websocketUrl: 'wss://test.invalid/browser/sync', authToken: 'fixture', beforeConnect: async () => {} },
+        })).rejects.toThrow(/empty authToken/);
+        expect(control.factories ?? 0).toBe(0); expect(opens).toHaveLength(0);
+    });
     it('refuses explicit NoHistory before native open when the runtime capability is absent', async () => {
         const { Lattice } = await library();
         const { defineModels } = await import('../src/explicit-models');

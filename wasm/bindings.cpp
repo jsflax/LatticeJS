@@ -43,6 +43,32 @@ EM_JS(EM_VAL, lattice_call_migration_js, (EM_VAL callback, EM_VAL context), {
     }
 });
 
+// Browser admission returns a deferred socket synchronously. Convert host throws
+// to data before re-entering C++ so its owners unwind through C++ exceptions.
+EM_JS(EM_VAL, lattice_call_socket_factory, (EM_VAL factory, const char* url), {
+    try {
+        const socket = Emval.toValue(factory)(UTF8ToString(url));
+        if (!socket || typeof socket.addEventListener !== 'function' ||
+            typeof socket.removeEventListener !== 'function' || typeof socket.close !== 'function' ||
+            typeof socket.send !== 'function') throw new Error('Invalid admitted transport');
+        return Emval.toHandle({ok: true, socket});
+    } catch (_) {
+        return Emval.toHandle({ok: false, error: 'Sync admission owner refused connection'});
+    }
+});
+
+EM_JS(EM_VAL, lattice_path_identity, (const char* raw_path), {
+    try {
+        const path = UTF8ToString(raw_path);
+        // SQLite's memory URI identity is not a filesystem path.
+        if (path === ':memory:' || path.startsWith('file:')) return Emval.toHandle({ok: true, path});
+        const info = FS.analyzePath(path);
+        const resolved = info.exists ? info.path : info.parentExists ?
+            PATH.join2(info.parentPath, info.name) : PATH_FS.resolve(path);
+        return Emval.toHandle({ok: true, path: resolved});
+    } catch (_) { return Emval.toHandle({ok: false}); }
+});
+
 // A migration context belongs to the synchronous open callback. Reject a
 // retained token after that callback before touching Core's stack state. Tokens
 // are never reused, even when a later callback occupies the same stack address.
@@ -117,6 +143,8 @@ class emscripten_scheduler : public scheduler, public std::enable_shared_from_th
     bool stopped_ = false;
     unsigned dispatch_depth_ = 0;
     val socket_ = val::null();
+    val socket_factory_ = val::null();
+    bool admitted_ = false;
     uint64_t next_socket_listener_ = 1;
     uint64_t socket_generation_ = 0;
     std::map<uint64_t, std::function<void(val)>> socket_listeners_;
@@ -133,6 +161,7 @@ public:
     inline static size_t alive_count = 0;
     inline static size_t pending_count = 0;
     emscripten_scheduler() { ++alive_count; }
+    explicit emscripten_scheduler(val factory) : socket_factory_(std::move(factory)), admitted_(true) { ++alive_count; }
     ~emscripten_scheduler() override { shutdown(); --alive_count; }
 
     void invoke(std::function<void()>&& fn) override {
@@ -173,6 +202,7 @@ public:
         pending.clear();
         socket_listeners_.clear();
         socket_ = val::null();
+        socket_factory_ = val::null();
     }
 
     void set_socket(val socket) {
@@ -191,13 +221,23 @@ public:
     void unwatch_socket(uint64_t id) { socket_listeners_.erase(id); }
     val socket() const { return socket_; }
     bool executing() const { return dispatch_depth_ != 0; }
+    bool has_admission() const { return admitted_; }
+    val admitted_socket(const std::string& url) {
+        if (stopped_ || !has_admission()) throw std::runtime_error("Sync admission owner is closed");
+        auto result = val::take_ownership(lattice_call_socket_factory(socket_factory_.as_handle(), url.c_str()));
+        if (!result["ok"].as<bool>()) throw std::runtime_error(result["error"].as<std::string>());
+        return result["socket"];
+    }
 
     [[nodiscard]] bool is_on_thread() const noexcept override {
         return true;  // WASM is single-threaded
     }
 
     [[nodiscard]] bool is_same_as(const scheduler* other) const noexcept override {
-        return dynamic_cast<const emscripten_scheduler*>(other) != nullptr;
+        auto* peer = dynamic_cast<const emscripten_scheduler*>(other);
+        // An admitted transport is bound to one immutable host grant generation.
+        // It must never inherit a sibling scheduler's hook through Core caching.
+        return peer && ((has_admission() || peer->has_admission()) ? this == peer : true);
     }
 
     [[nodiscard]] bool can_invoke() const noexcept override {
@@ -262,8 +302,8 @@ public:
         }
 
         // Create WebSocket
-        val WebSocket = val::global("WebSocket");
-        ws_ = WebSocket.new_(final_url);
+        ws_ = scheduler_->has_admission() ? scheduler_->admitted_socket(final_url) :
+            val::global("WebSocket").new_(final_url);
         scheduler_->set_socket(ws_);
 
         // Set binary type to arraybuffer
@@ -1396,6 +1436,31 @@ class JsLattice {
     std::unordered_set<uint64_t> socket_listener_ids_;
     inline static std::map<lattice::swift_lattice*, size_t> native_holders_;
 
+    static std::string admission_path(const std::string& path) {
+        auto result = val::take_ownership(lattice_path_identity(path.c_str()));
+        if (!result["ok"].as<bool>()) throw std::runtime_error("Cannot determine sync admission store identity");
+        return result["path"].as<std::string>();
+    }
+    static void require_exclusive_admission(const std::string& path, bool incoming_admitted) {
+        const bool incoming_uri = path.rfind("file:", 0) == 0;
+        if (incoming_admitted && incoming_uri) {
+            throw std::runtime_error("Admitted sync does not support SQLite file: URI paths; use an ordinary store path");
+        }
+        const auto identity = admission_path(path);
+        for (const auto& [native, count] : native_holders_) {
+            auto owner = std::dynamic_pointer_cast<emscripten_scheduler>(native->get_scheduler());
+            const bool existing_admitted = owner && owner->has_admission();
+            if ((incoming_admitted && native->config().path.rfind("file:", 0) == 0) ||
+                (existing_admitted && incoming_uri)) {
+                throw std::runtime_error("Cannot mix admitted owners and SQLite file: URI owners; close the existing owner first");
+            }
+            if ((incoming_admitted || existing_admitted) &&
+                admission_path(native->config().path) == identity) {
+                throw std::runtime_error("Sync admission requires one live Lattice owner per store path; close the existing owner first");
+            }
+        }
+    }
+
     void own_reference() {
         retainSwiftLatticeRef(ref_);
         owns_reference_ = true;
@@ -1438,6 +1503,8 @@ class JsLattice {
     }
 
 public:
+    static void assertRestoreAllowed(const std::string& path) { require_exclusive_admission(path, false); }
+
     static val lifecycleDiagnostics() {
         val result = val::object();
         result.set("nativeOwners", val(static_cast<unsigned>(native_holders_.size())));
@@ -1470,6 +1537,7 @@ public:
             throw_js_error("arity-3 Lattice constructor is the read-only audit open; pass true");
         }
         try {
+            require_exclusive_admission(path, false);
             audit_only_ = true;
             swift_configuration config;
             config.path = path;
@@ -1483,42 +1551,36 @@ public:
         }
     }
 
-    // Constructor with sync configuration
+    // Legacy constructors retain bearer-token-required sync and existing sharing.
     JsLattice(const std::string& path, const val& schemas,
-              const std::string& websocket_url, const std::string& auth_token) {
-        try {
-            if (!websocket_url.empty()) {
-                init_emscripten_network();
-            }
-
-            configuration config(path, std::make_shared<emscripten_scheduler>());
-
-            if (!websocket_url.empty()) {
-                config.websocket_url = websocket_url;
-                config.authorization_token = auth_token;
-            }
-
-            auto schema_vec = js_to_schema_vector(schemas);
-            ref_ = swift_lattice_ref::create(config, schema_vec);
-            own_reference();
-        } catch (const std::exception& e) {
-            throw_js_error(std::string("Failed to open database: ") + e.what());
-        } catch (...) {
-            throw_js_error("Failed to open database: unknown error");
-        }
-    }
+              const std::string& websocket_url, const std::string& auth_token)
+        : JsLattice(path, schemas, websocket_url, auth_token, 0, val::null(), val::null()) {}
 
     // Constructor with migration support
     JsLattice(const std::string& path, const val& schemas,
               const std::string& websocket_url, const std::string& auth_token,
-              int32_t schema_version, val migration_callback) {
+              int32_t schema_version, val migration_callback)
+        : JsLattice(path, schemas, websocket_url, auth_token, schema_version, std::move(migration_callback), val::null()) {}
+
+    // Internal admitted open is reachable only through the tagged factory below.
+    JsLattice(const std::string& path, const val& schemas,
+              const std::string& websocket_url, const std::string& auth_token,
+              int32_t schema_version, val migration_callback, val socket_factory) {
         try {
+            const bool admitted = !socket_factory.isNull() && !socket_factory.isUndefined();
+            if (admitted && (socket_factory.typeOf().as<std::string>() != "function" ||
+                websocket_url.empty() || !auth_token.empty())) {
+                throw std::runtime_error("Admitted sync requires a callable factory, endpoint, and empty bearer token");
+            }
+            require_exclusive_admission(path, admitted);
             if (!websocket_url.empty()) {
                 init_emscripten_network();
             }
 
-            configuration config(path, std::make_shared<emscripten_scheduler>());
-            config.target_schema_version = schema_version;
+            configuration config(path, admitted ? std::make_shared<emscripten_scheduler>(std::move(socket_factory)) :
+                std::make_shared<emscripten_scheduler>());
+            if (schema_version > 0) config.target_schema_version = schema_version;
+            if (admitted) config.sync_authentication_mode = sync_authentication::transport_managed;
 
             if (!websocket_url.empty()) {
                 config.websocket_url = websocket_url;
@@ -2827,6 +2889,27 @@ static val open_versioned_lattice(const std::string& path, const val& schemas,
     return result;
 }
 
+static val open_admitted_lattice(const std::string& path, const val& schemas,
+                                 const std::string& url, int32_t version,
+                                 const val& callback, const val& factory) {
+    val result = val::object();
+    try {
+        if (factory.typeOf().as<std::string>() != "function" || version < 0) {
+            throw std::runtime_error("Invalid admitted database open");
+        }
+        auto db = std::make_shared<JsLattice>(path, schemas, url, "", version, callback, factory);
+        result.set("db", db);
+        result.set("ok", true);
+    } catch (const val& error) {
+        result.set("ok", false);
+        result.set("error", error["message"].as<std::string>());
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    }
+    return result;
+}
+
 // Finish unwinding C++ owners and Embind arguments before throwing in JS. A
 // C++-thrown emscripten::val is otherwise exposed as a numeric exception pointer;
 // val.throw_() instead skips C++ cleanup. This tagged boundary avoids both.
@@ -3037,5 +3120,10 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("safeCompactAuditLog", &JsLattice::safeCompactAuditLog)
         .function("generateHistory", &JsLattice::generateHistory);
     function("_openVersioned", &open_versioned_lattice);
+    function("_openAdmitted", &open_admitted_lattice);
+    function("_assertRestoreAllowed", optional_override([](const std::string& path) {
+        return object_operation_result([&] { JsLattice::assertRestoreAllowed(path); });
+    }));
+    function("syncAdmissionVersion", optional_override([]() { return 1; }));
     install_object_result_wrappers();
 }

@@ -71,7 +71,8 @@ export default async function lifecycleWasm() {
             }
             delete() { this.deleted = true; control.deletes++; this.releaseStorage(); }
         },
-        FS: { analyzePath: () => ({ exists: true }), readFile: () => control.snapshotBytes ?? new Uint8Array(0), writeFile() {} },
+        FS: { analyzePath: () => ({ exists: true }), readFile: () => control.snapshotBytes ?? new Uint8Array(0), writeFile(path, bytes) { control.restoreWrites = (control.restoreWrites ?? 0) + 1; control.onRestoreWrite?.(path, bytes); } },
+        _assertRestoreAllowed(path) { return control.restoreCheck?.(path) ?? { ok: true }; },
         _ws_purge_client() { control.purges++; },
         _migration_execute_sql(...args) { return control.migrationOperation?.('executeSql', ...args) ?? { ok: true }; },
         _migration_delete_all(...args) { return control.migrationOperation?.('deleteAll', ...args) ?? { ok: true }; },

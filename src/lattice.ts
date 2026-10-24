@@ -1,8 +1,9 @@
 // Main Lattice class - user-facing API
-import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult } from './types';
+import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult, SyncConfiguration } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
 import { assertSafeAuditValue, parseSafeAuditJSON } from './audit-json';
 import { captureValuesSync as captureDetachedValues, type CaptureSelector, type CapturedValues } from './capture-values';
+import { SyncAdmissionOwner, validateSyncAdmission } from './sync-admission';
 import { checkedRowId, isExplicitModel } from './explicit-values';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
@@ -89,6 +90,7 @@ export enum LogLevel {
 // Global WASM module cache
 let wasmModule: any = null;
 let wasmInitialization: Promise<any> | null = null;
+class SyncAdmissionConflictError extends Error {}
 
 /** How long `resumePendingFrom` waits for the new store's socket to open. */
 const RESUME_CONNECT_TIMEOUT_MS = 20000;
@@ -142,6 +144,7 @@ export class Lattice {
         modelMap: Map<string, ModelConstructor>,
         private readonly syncState: InstanceSyncState,
         private readonly syncConfigured: boolean,
+        private readonly syncAdmission: SyncAdmissionOwner | null = null,
     ) {
         this.db = db;
         this.schemas = schemas;
@@ -151,10 +154,7 @@ export class Lattice {
     /**
      * Sync configuration for connecting to a Lattice server.
      */
-    static syncConfig?: {
-        websocketUrl: string;
-        authToken?: string;
-    };
+    static syncConfig?: SyncConfiguration;
 
     /**
      * Load and cache the WASM module (idempotent). Every entry point that
@@ -248,10 +248,7 @@ export class Lattice {
         options?: {
             /** Installed before transport construction; events belong to this instance. */
             onSyncState?: (info: SyncStateInfo) => void;
-            sync?: {
-                websocketUrl: string;
-                authToken?: string;
-            };
+            sync?: SyncConfiguration;
             schemaVersion?: number;
             migration?: (ctx: MigrationContext) => void;
             /**
@@ -283,6 +280,15 @@ export class Lattice {
         if (options?.migration && options.schemaVersion === undefined) {
             throw new TypeError('migration requires an explicit schemaVersion');
         }
+        // Snapshot the admission policy before loading/restoring can yield to the host.
+        const syncConfig = options?.sync ? { ...options.sync } : undefined;
+        validateSyncAdmission(syncConfig);
+        if (syncConfig?.beforeConnect && path.startsWith('file:')) {
+            throw new TypeError('Admitted sync does not support SQLite file: URI paths; use a :memory: store path');
+        }
+        if (syncConfig?.beforeConnect && !(path === ':memory:' || path.startsWith(':memory:'))) {
+            throw new TypeError('Admitted sync is memory-only; persistent stores require a pre-restore ownership reservation');
+        }
         // Build schemas from models
         const schemas = buildSchemas(models);
 
@@ -295,7 +301,9 @@ export class Lattice {
             }
         }
 
-        const state = new InstanceSyncState(safeRandomUUID(), !!options?.sync?.websocketUrl);
+        const instanceId = safeRandomUUID();
+        const state = new InstanceSyncState(instanceId, !!syncConfig?.websocketUrl);
+        let admission: SyncAdmissionOwner | null = null;
         if (options?.onSyncState) state.subscribe(options.onSyncState);
         try {
             // Load WASM module if not already loaded (needed for main thread)
@@ -310,8 +318,15 @@ export class Lattice {
                 throw new Error('Native explicitNoHistoryVersion 1 capability required');
             }
 
+            if (syncConfig?.beforeConnect) {
+                if (wasmModule.syncAdmissionVersion?.() !== 1 || typeof wasmModule._openAdmitted !== 'function' ||
+                    typeof wasmModule._assertRestoreAllowed !== 'function') {
+                    throw new Error('Native syncAdmissionVersion 1 capability required');
+                }
+                admission = new SyncAdmissionOwner(syncConfig, instanceId);
+            }
+
             const isInMemory = path === ':memory:' || path.startsWith(':memory:');
-            const syncConfig = options?.sync;
             const schemaVersion = options?.schemaVersion;
             const migrationFn = options?.migration;
             let lattice: Lattice;
@@ -319,15 +334,15 @@ export class Lattice {
             if (isInMemory) {
                 // In-memory: just use main thread
                 console.log('[Lattice] Creating in-memory database');
-                const makeDb = () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn);
+                const makeDb = () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn, admission);
                 const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb, state);
-                lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
+                lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl, admission);
                 lattice.syncSockets = sockets;
                 lattice.startSyncSocketWatch();
             } else {
                 // Persistent: same main-thread wasm, snapshotted to and restored
                 // from OPFS. See openPersistent.
-                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig, schemaVersion, migrationFn);
+                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig, schemaVersion, migrationFn, admission);
             }
 
             // Rescue whatever the store this one replaces never managed to upload.
@@ -341,6 +356,7 @@ export class Lattice {
             }
             return lattice;
         } catch (error) {
+            admission?.dispose();
             state.fail(); state.retire();
             throw error;
         }
@@ -351,10 +367,14 @@ export class Lattice {
     private static createDatabase(
         path: string,
         schemas: SchemaEntry[],
-        syncConfig?: { websocketUrl: string; authToken?: string },
+        syncConfig?: SyncConfiguration,
         schemaVersion?: number,
         migrationFn?: (ctx: MigrationContext) => void,
+        admission: SyncAdmissionOwner | null = null,
     ): LatticeWasm {
+        // Legacy callers receive a normal JS error before a raw constructor can
+        // collide with an admitted owner; this also follows any async restore.
+        if (!admission) Lattice.assertRestoreAllowed(path);
         if (schemaVersion !== undefined) {
             // Migration-aware constructor
             const jsMigrationCallback = migrationFn ? (ctx: any) => {
@@ -399,12 +419,18 @@ export class Lattice {
                     }
                 } finally { active = false; }
             } : null;
-            const result = wasmModule._openVersioned(
+            const result = admission ? wasmModule._openAdmitted(
+                path, schemas, syncConfig!.websocketUrl, schemaVersion, jsMigrationCallback, admission.createSocket,
+            ) : wasmModule._openVersioned(
                 path, schemas,
                 syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
                 schemaVersion, jsMigrationCallback
             );
             if (result?.ok !== true) throw new Error(result?.error ?? 'Versioned database open failed');
+            return result.db;
+        } else if (admission) {
+            const result = wasmModule._openAdmitted(path, schemas, syncConfig!.websocketUrl, 0, null, admission.createSocket);
+            if (result?.ok !== true) throw new Error(result?.error ?? 'Admitted database open failed');
             return result.db;
         } else if (syncConfig?.websocketUrl) {
             console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
@@ -432,9 +458,10 @@ export class Lattice {
         schemas: SchemaEntry[],
         modelMap: Map<string, ModelConstructor>,
         state: InstanceSyncState,
-        syncConfig?: { websocketUrl: string; authToken?: string },
+        syncConfig?: SyncConfiguration,
         schemaVersion?: number,
         migrationFn?: (ctx: MigrationContext) => void,
+        admission: SyncAdmissionOwner | null = null,
     ): Promise<Lattice> {
         console.log('[Lattice] Opening persistent database:', path);
 
@@ -446,8 +473,8 @@ export class Lattice {
 
         // Open with named path (MEMFS) + sync
         const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl,
-            () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn), state);
-        const lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
+            () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn, admission), state);
+        const lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl, admission);
         lattice.syncSockets = sockets;
         try {
             lattice.startSyncSocketWatch();
@@ -592,6 +619,17 @@ export class Lattice {
         }
     }
 
+    private static assertRestoreAllowed(path: string): void {
+        if (typeof wasmModule._assertRestoreAllowed !== 'function') {
+            if (typeof wasmModule.syncAdmissionVersion === 'function') {
+                throw new SyncAdmissionConflictError('Native admission store guard is unavailable');
+            }
+            return; // Older artifacts cannot create an admitted owner.
+        }
+        const result = wasmModule._assertRestoreAllowed(path);
+        if (result?.ok !== true) throw new SyncAdmissionConflictError(result?.error ?? 'Admitted store ownership prevents restore');
+    }
+
     /**
      * Restore database snapshot from OPFS into Emscripten MEMFS.
      */
@@ -608,11 +646,14 @@ export class Lattice {
 
             if (data.length === 0) return false;
 
-            // Write to Emscripten MEMFS so SQLite finds it when opening
+            // This is the only restore mutation. Check immediately before it,
+            // after all OPFS awaits, with no yield before writeFile can truncate.
+            Lattice.assertRestoreAllowed(path);
             wasmModule.FS.writeFile(path, data);
             console.log(`[Lattice] Snapshot restored: ${data.length} bytes`);
             return true;
-        } catch {
+        } catch (error) {
+            if (error instanceof SyncAdmissionConflictError) throw error;
             return false;
         }
     }
@@ -1447,6 +1488,8 @@ export class Lattice {
         const snapshotMs = timeout(options.snapshotTimeoutMs, 2000);
         this.closing = true;
         this.syncState.retire();
+        // Revocation/close cancels admission immediately, before deferred native teardown.
+        this.syncAdmission?.dispose();
         for (const stop of [...this.stopWaits]) stop();
         this.housekeepingCleanup?.();
         this.housekeepingCleanup = null;
