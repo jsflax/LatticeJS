@@ -18,6 +18,7 @@
 #include <dynamic_object.hpp>
 #include <list.hpp>
 #include <lattice/sync.hpp>
+#include "capture-values.hpp"
 
 #include <sys/stat.h>
 
@@ -1391,6 +1392,7 @@ val dynamic_object_ref_to_js(dynamic_object_ref* obj, const SwiftSchema* schema)
 
 class JsLattice {
     bool owns_reference_ = false;
+    bool audit_only_ = false;
     std::unordered_set<uint64_t> socket_listener_ids_;
     inline static std::map<lattice::swift_lattice*, size_t> native_holders_;
 
@@ -1468,6 +1470,7 @@ public:
             throw_js_error("arity-3 Lattice constructor is the read-only audit open; pass true");
         }
         try {
+            audit_only_ = true;
             swift_configuration config;
             config.path = path;
             config.sched = std::make_shared<emscripten_scheduler>();
@@ -1653,6 +1656,60 @@ public:
             throw_js_error("findByGlobalId failed: unknown error");
         }
         return val::null();
+    }
+
+    // Parse/copy JS input before entering the callback-free native read. Convert
+    // the detached result only after capture_native has ended its read scope.
+    val captureValuesSync(const val& input) {
+        static const std::unordered_set<std::string> fields{"table", "properties", "maxRows"};
+        std::vector<lattice_js_capture::selector> selectors;
+        const auto count = bounded_array(input, lattice_js_capture::max_selectors);
+        auto name = [](const val& value) {
+            if (!value.isString() || value["length"].as<size_t>() > 128)
+                throw std::invalid_argument("Invalid capture identifier");
+            const auto copied = value.as<std::string>();
+            if (!lattice_js_capture::identifier(copied)) throw std::invalid_argument("Invalid capture identifier");
+            return copied;
+        };
+        for (size_t i = 0; i < count; ++i) {
+            const auto selector = input[i];
+            record_fields(selector, &fields);
+            lattice_js_capture::selector copied;
+            copied.table = name(selector["table"]);
+            const auto properties = selector["properties"];
+            const auto property_count = bounded_array(properties, lattice_js_capture::max_properties);
+            for (size_t j = 0; j < property_count; ++j) copied.properties.push_back(name(properties[j]));
+            if (!selector["maxRows"].isUndefined()) {
+                const auto limit = selector["maxRows"];
+                if (limit.typeOf().as<std::string>() != "number") throw std::invalid_argument("Invalid capture maxRows");
+                const auto number = limit.as<double>();
+                if (!std::isfinite(number) || std::floor(number) != number || number < 1 || number > lattice_js_capture::max_rows)
+                    throw std::invalid_argument("Invalid capture maxRows");
+                copied.max_rows = static_cast<size_t>(number);
+            }
+            selectors.push_back(std::move(copied));
+        }
+        if (!ref_) throw std::runtime_error("Capture requires an open database");
+        const auto detached = lattice_js_capture::capture_native(swift_lattice_ref::shared_for_lattice(ref_->get()), selectors);
+        val rows = val::array();
+        for (const auto& row : detached.rows) {
+            val values = val::object();
+            for (const auto& [key, cell] : row.values) {
+                const auto copied = std::visit([](const auto& value) -> val {
+                    using T = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<T, std::nullptr_t>) return val::null();
+                    else if constexpr (std::is_same_v<T, lattice_js_capture::link>) {
+                        val result = val::object(); result.set("table", value.table); result.set("globalId", value.global_id); return result;
+                    } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+                        val result = val::array(); for (const auto byte : value) result.call<void>("push", byte); return result;
+                    } else return val(value);
+                }, cell);
+                values.set(key, copied);
+            }
+            val copied = val::object(); copied.set("table", row.table); copied.set("globalId", row.global_id); copied.set("values", values);
+            rows.call<void>("push", copied);
+        }
+        val result = val::object(); result.set("formatVersion", 1); result.set("rows", rows); return result;
     }
 
     // Explicit-model callers hydrate managed rows by identity. They must not
@@ -1918,42 +1975,121 @@ public:
     // sibling relay applied — has no such mark. So: unsynced AND unmarked.
     // Downloads excluded, local writes + second-generation rescues included,
     // no reliance on isFromRemote heuristics.
+    std::vector<std::pair<int64_t, std::string>> unshippedAuditIdentities(bool local_only) {
+        if (!ref_) throw std::runtime_error("Lattice has been released");
+        auto& db = ref_->get()->db();
+        constexpr size_t max_entries = 4096, max_bytes = 16 * 1024 * 1024;
+        // Bound the selected identities before materializing any payload or
+        // running its late binder. Never load the store's complete history.
+        std::string sql = "SELECT a.id, a.globalId, "
+            "length(CAST(a.changedFields AS BLOB)) + length(CAST(a.changedFieldsNames AS BLOB)) + "
+            "length(CAST(a.globalId AS BLOB)) + length(CAST(a.tableName AS BLOB)) + "
+            "length(CAST(a.globalRowId AS BLOB)) + length(CAST(a.timestamp AS BLOB)) + 256 AS rawBytes "
+            "FROM AuditLog a WHERE a.isSynchronized=0";
+        if (db.table_exists("_lattice_sync_state")) sql +=
+            " AND NOT EXISTS(SELECT 1 FROM _lattice_sync_state s WHERE s.audit_entry_id=a.id AND s.is_synchronized=1)";
+        if (local_only) sql += " AND a.isFromRemote=0";
+        sql += " ORDER BY a.id ASC LIMIT 4097";
+        const auto rows = db.query(sql, {});
+        if (rows.size() > max_entries) throw std::runtime_error("Pending audit aggregate row limit exceeded");
+        std::vector<std::pair<int64_t, std::string>> identities;
+        size_t bytes = 0;
+        for (const auto& row : rows) {
+            const auto raw_bytes = std::get<int64_t>(row.at("rawBytes"));
+            if (raw_bytes < 0 || static_cast<uint64_t>(raw_bytes) > max_bytes - bytes) {
+                throw std::runtime_error("Pending audit aggregate byte limit exceeded");
+            }
+            bytes += static_cast<size_t>(raw_bytes);
+            identities.emplace_back(std::get<int64_t>(row.at("id")), std::get<std::string>(row.at("globalId")));
+        }
+        return identities;
+    }
+
     std::string getUnshippedAuditLog() {
         try {
-            auto& db = ref_->get()->db();
-            std::unordered_set<int64_t> acked;
-            if (db.table_exists("_lattice_sync_state")) {
-                auto rows = db.query(
-                    "SELECT DISTINCT audit_entry_id FROM _lattice_sync_state "
-                    "WHERE is_synchronized = 1", {});
-                for (const auto& row : rows) {
-                    auto it = row.find("audit_entry_id");
-                    if (it != row.end() && std::holds_alternative<int64_t>(it->second)) {
-                        acked.insert(std::get<int64_t>(it->second));
-                    }
-                }
-            }
-            // only_unsynced=true would ALSO filter isFromRemote=0 in core —
-            // silently dropping rows a drain or sibling relay applied
-            // (isFromRemote=1, unsynced, unmarked), i.e. making a
-            // second-generation rescue lossy. Take every row and apply the
-            // documented predicate ourselves: unsynced AND unmarked.
-            auto entries = query_audit_log(db, false /*all rows*/, std::nullopt);
+            const auto frames = getUnshippedAuditFrames(false, 1000);
             std::string json = "[";
-            bool first = true;
-            for (const auto& entry : entries) {
-                if (entry.is_synchronized) continue;
-                if (acked.count(entry.id)) continue;
-                if (!first) json += ",";
-                first = false;
-                json += entry.to_json();
+            const size_t count = frames["length"].as<size_t>();
+            for (size_t i = 0; i < count; ++i) {
+                const auto raw = frames[i]["json"].as<std::string>();
+                if (i) json += ",";
+                json.append(raw, 1, raw.size() - 2);
             }
-            json += "]";
-            return json;
+            return json + "]";
         } catch (const std::exception& e) {
             printf("[getUnshippedAuditLog] Error: %s\n", e.what());
             return "[]";
         }
+    }
+
+    // Payloads remain native-owned JSON strings. JS sees only identity metadata
+    // and must not parse/re-encode the Int64-valued audit envelope.
+    val getUnshippedAuditFrames(bool local_only, int32_t max_entries) {
+        if (max_entries < 1 || max_entries > 1000) throw std::invalid_argument("maxEntries must be between 1 and 1000");
+        constexpr size_t max_bytes = 8 * 1024 * 1024;
+        const auto selected = unshippedAuditIdentities(local_only);
+        val frames = val::array(), metadata = val::array();
+        std::string json = "[";
+        size_t count = 0, total_bytes = 0;
+        auto flush = [&] {
+            if (!count) return;
+            val frame = val::object();
+            frame.set("formatVersion", 1);
+            frame.set("entries", metadata);
+            frame.set("json", json + "]");
+            frames.call<void>("push", frame);
+            metadata = val::array(); json = "["; count = 0;
+        };
+        for (const auto& identity : selected) {
+            // Decode/late-bind one entry at a time. A shared large NoHistory
+            // cache must not multiply across thousands of retained rows before
+            // we can enforce the aggregate serialized budget. Core also bounds
+            // each selected read's raw and expanded values before publication.
+            if (total_bytes + 2 >= 16 * 1024 * 1024) throw std::runtime_error("Pending audit aggregate byte limit exceeded");
+            const auto entries = query_audit_log_selected(ref_->get()->db(), {identity}, 16 * 1024 * 1024 - total_bytes - 2);
+            if (entries.size() != 1) throw std::runtime_error("Pending audit identity disappeared");
+            const auto& entry = entries.front();
+            const auto raw = entry.to_json();
+            if (raw.size() + 2 > 16 * 1024 * 1024 - total_bytes) throw std::runtime_error("Pending audit aggregate byte limit exceeded");
+            total_bytes += raw.size() + 2;
+            if (raw.size() + 2 > max_bytes) throw std::runtime_error("Pending audit entry exceeds frame byte limit");
+            if (count && (count >= static_cast<size_t>(max_entries) || json.size() + raw.size() + 2 > max_bytes)) flush();
+            if (count) json += ",";
+            json += raw;
+            val metadata_entry = val::object();
+            metadata_entry.set("globalId", entry.global_id); metadata_entry.set("tableName", entry.table_name);
+            metadata.call<void>("push", metadata_entry);
+            ++count;
+        }
+        flush();
+        return frames;
+    }
+
+    val importPendingFrame(const std::string& frame) {
+        if (!ref_ || audit_only_) throw std::runtime_error("Writable Lattice required for pending import");
+        if (frame.size() > 8 * 1024 * 1024) throw std::invalid_argument("Pending frame exceeds byte limit");
+        const auto raw = nlohmann::json::parse(frame);
+        if (!raw.is_array() || raw.empty() || raw.size() > 1000) throw std::invalid_argument("Pending frame must contain 1 to 1000 entries");
+        std::vector<audit_log_entry> entries;
+        std::unordered_set<std::string> ids;
+        for (const auto& value : raw) {
+            const auto entry = audit_log_entry::from_json(value.dump());
+            if (!entry || entry->global_id.empty() || !ids.insert(entry->global_id).second) {
+                throw std::invalid_argument("Invalid or duplicate pending frame entry");
+            }
+            entries.push_back(*entry);
+        }
+        const auto imported = apply_pending_changes(*ref_->get(), entries);
+        auto strings = [](const std::vector<std::string>& values) {
+            val output = val::array();
+            for (const auto& value : values) output.call<void>("push", value);
+            return output;
+        };
+        val result = val::object();
+        result.set("imported", strings(imported.imported_ids));
+        result.set("alreadyPresent", strings(imported.already_present_ids));
+        result.set("rejected", strings(imported.rejected_ids));
+        return result;
     }
 
     // Exact native owner identity, including cache reuse. No URL guessing or
@@ -2039,88 +2175,24 @@ public:
         }
     }
 
-    // Apply remote changes from JSON (audit log entries)
-    // Returns JSON array of global IDs that were applied
+    // Compatibility pending-import entry point. Historically this method
+    // journalled unsynchronized relayed rows; it is not server receive. Keep
+    // its array/[] result shape while sharing Core's guarded pending path.
     std::string applyRemoteChanges(const std::string& json) {
         try {
-            // Parse JSON array of audit log entries
-            auto j = nlohmann::json::parse(json);
-            if (!j.is_array()) {
-                printf("[applyRemoteChanges] Expected JSON array\n");
-                return "[]";
+            const auto result = importPendingFrame(json);
+            nlohmann::json accepted = nlohmann::json::array();
+            for (const auto* name : {"imported", "alreadyPresent"}) {
+                const auto ids = result[name];
+                const size_t count = ids["length"].as<size_t>();
+                for (size_t i = 0; i < count; ++i) accepted.push_back(ids[i].as<std::string>());
             }
-
-            std::vector<std::string> applied_ids;
-            std::vector<audit_log_entry> entries_to_record;
-
-            // Disable sync triggers while applying remote changes
-            // (we'll manually insert AuditLog entries with isFromRemote=1)
-            ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 1 WHERE id = 1");
-
-            for (const auto& entry_json : j) {
-                auto entry = audit_log_entry::from_json(entry_json.dump());
-                if (!entry) {
-                    printf("[applyRemoteChanges] Failed to parse entry\n");
-                    continue;
-                }
-
-                // Get schema for table to handle BLOB columns
-                const auto* props = ref_->get()->get_properties_for_table(entry->table_name);
-                std::unordered_map<std::string, column_type> schema;
-                if (props) {
-                    for (const auto& [name, desc] : *props) {
-                        schema[name] = desc.type;
-                    }
-                }
-
-                // Generate and execute the SQL instruction
-                auto [sql, params] = entry->generate_instruction(schema);
-                if (!sql.empty()) {
-                    try {
-                        ref_->get()->db().execute(sql, params);
-                        applied_ids.push_back(entry->global_id);
-                        entries_to_record.push_back(*entry);
-                    } catch (const std::exception& e) {
-                        char buf[1024];
-                        snprintf(buf, sizeof(buf), "applyRemoteChanges SQL FAILED: %s | SQL: %.500s | table: %s op: %s",
-                                 e.what(), sql.c_str(), entry->table_name.c_str(), entry->operation.c_str());
-                        debugLogToChannel(buf);
-                    }
-                }
-            }
-
-            // Re-enable sync triggers
-            ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 0 WHERE id = 1");
-
-            // Now manually insert AuditLog entries for applied changes
-            // Mark them as isFromRemote=1 so we don't re-broadcast them
-            for (const auto& entry : entries_to_record) {
-                try {
-                    ref_->get()->db().execute(
-                        "INSERT OR REPLACE INTO AuditLog "
-                        "(globalId, tableName, operation, rowId, globalRowId, changedFields, changedFieldsNames, timestamp, isFromRemote, isSynchronized) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)",
-                        {
-                            entry.global_id,
-                            entry.table_name,
-                            entry.operation,
-                            entry.row_id,
-                            entry.global_row_id,
-                            entry.changed_fields_to_json(),
-                            entry.changed_fields_names_to_json(),
-                            entry.timestamp
-                        }
-                    );
-                } catch (const std::exception& e) {
-                    printf("[applyRemoteChanges] Failed to record AuditLog entry: %s\n", e.what());
-                }
-            }
-
-            // Return applied IDs as JSON array
-            nlohmann::json result = applied_ids;
-            return result.dump();
-        } catch (const std::exception& e) {
-            printf("[applyRemoteChanges] Error: %s\n", e.what());
+            return accepted.dump();
+        } catch (const std::exception& error) {
+            printf("[applyRemoteChanges] Error: %s\n", error.what());
+            return "[]";
+        } catch (...) {
+            printf("[applyRemoteChanges] Unknown error\n");
             return "[]";
         }
     }
@@ -2210,47 +2282,25 @@ public:
                     if (!ctx->active) return;
                     auto owner = weak_owner.lock();
                     if (!owner || owner->is_closed()) return;
-                    std::string json = "[";
-                    bool any = false;
+                    std::vector<std::pair<int64_t, std::string>> identities;
                     for (const auto& [table, operation, row_id, global_id, fields] : batch) {
                         if (!ctx->active) return;
-                        if (operation != "INSERT") continue;
-                        // Notifications identify AuditLog rows, not model operations.
-                        // Match both stored identities before serializing the full row.
-                        auto rows = owner->db().query(
-                            "SELECT id, globalId, tableName, operation, rowId, globalRowId, "
-                            "changedFields, changedFieldsNames, CAST(timestamp AS TEXT) AS timestamp, isFromRemote, "
-                            "isSynchronized FROM AuditLog WHERE id = ? AND globalId = ?",
-                            {row_id, global_id});
-                        if (rows.size() != 1)
-                            throw std::runtime_error("Observed AuditLog row is no longer available");
-                        const auto& row = rows.front();
-                        auto text = [&row](const char* key) -> const std::string& {
-                            return std::get<std::string>(row.at(key));
-                        };
-                        auto integer = [&row](const char* key) -> int64_t {
-                            return std::get<int64_t>(row.at(key));
-                        };
-                        audit_log_entry entry;
-                        entry.id = integer("id");
-                        entry.global_id = text("globalId");
-                        entry.table_name = text("tableName");
-                        entry.operation = text("operation");
-                        entry.row_id = integer("rowId");
-                        entry.global_row_id = text("globalRowId");
-                        entry.changed_fields = audit_log_entry::parse_changed_fields(text("changedFields"));
-                        entry.changed_fields_names = audit_log_entry::parse_changed_fields_names(text("changedFieldsNames"));
-                        entry.timestamp = text("timestamp");
-                        entry.is_from_remote = integer("isFromRemote") != 0;
-                        entry.is_synchronized = integer("isSynchronized") != 0;
-                        if (any) json += ",";
-                        json += entry.to_json();
-                        any = true;
+                        if (operation == "INSERT") identities.emplace_back(row_id, global_id);
+                    }
+                    if (identities.empty()) return;
+                    // Selected Core-owned decoding includes synthesized and
+                    // the same NoHistory late binder used by native shippers.
+                    const auto entries = query_audit_log_selected(owner->db(), identities);
+                    std::string json = "[";
+                    for (size_t i = 0; i < entries.size(); ++i) {
+                        if (i) json += ",";
+                        json += entries[i].to_json();
+                        if (json.size() + 1 > 16 * 1024 * 1024) throw std::runtime_error("Observed audit aggregate byte limit exceeded");
                     }
                     json += "]";
                     // Missing or malformed rows fail before publication. This live
                     // API does not promise replay after audit history is pruned.
-                    if (any && ctx->active) {
+                    if (ctx->active) {
                         auto callback = ctx->callback;
                         callback(json);
                     }
@@ -2819,7 +2869,7 @@ EM_JS(void, install_object_result_wrappers, (), {
         'setInt', 'setString', 'setDouble', 'setBool', 'setData', 'setNil',
         'getObject', 'setObject', 'getLinkList', 'getUnion', 'setUnion'
     ]);
-    install(Module['Lattice'].prototype, ['addObject', 'objectIdentities']);
+    install(Module['Lattice'].prototype, ['addObject', 'objectIdentities', 'getUnshippedAuditFrames', 'importPendingFrame', 'captureValuesSync']);
 });
 
 EMSCRIPTEN_BINDINGS(lattice) {
@@ -2931,6 +2981,9 @@ EMSCRIPTEN_BINDINGS(lattice) {
                     const val& group, const val& distinct) {
             return object_operation_result([&] { return database.objectIdentities(table, where, order, limit, offset, group, distinct); });
         }))
+        .function("_result_captureValuesSync", optional_override([](JsLattice& database, const val& selectors) {
+            return object_operation_result([&] { return database.captureValuesSync(selectors); });
+        }))
         .function("count", &JsLattice::count)
         .function("remove", &JsLattice::remove)
         .function("beginWrite", &JsLattice::beginWrite)
@@ -2942,6 +2995,12 @@ EMSCRIPTEN_BINDINGS(lattice) {
         // Audit log / sync methods
         .function("getPendingAuditLog", &JsLattice::getPendingAuditLog)
         .function("getUnshippedAuditLog", &JsLattice::getUnshippedAuditLog)
+        .function("_result_getUnshippedAuditFrames", optional_override([](JsLattice& database, bool local_only, int32_t max_entries) {
+            return object_operation_result([&] { return database.getUnshippedAuditFrames(local_only, max_entries); });
+        }))
+        .function("_result_importPendingFrame", optional_override([](JsLattice& database, const std::string& frame) {
+            return object_operation_result([&] { return database.importPendingFrame(frame); });
+        }))
         .function("releaseStorage", &JsLattice::releaseStorage)
         .function("walCheckpoint", &JsLattice::walCheckpoint)
         .function("applyRemoteChanges", &JsLattice::applyRemoteChanges)

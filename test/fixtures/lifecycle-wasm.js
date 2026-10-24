@@ -41,6 +41,19 @@ export default async function lifecycleWasm() {
             removeSyncProgress(id) { control.progressRemoved = (control.progressRemoved ?? 0) + 1; this.observers.delete(id); }
             getPendingAuditLog() { if (this.released) throw new Error('read after release'); return '[]'; }
             getUnshippedAuditLog() { return JSON.stringify(control.pendingRows ?? []); }
+            getUnshippedAuditFrames(localOnly, maxEntries) {
+                if (this.released) throw new Error('read after release');
+                const rows = (control.pendingRows ?? []).filter(row => !row.isSynchronized && (!localOnly || !row.isFromRemote));
+                const frames = [];
+                for (let i = 0; i < rows.length; i += maxEntries) {
+                    const chunk = rows.slice(i, i + maxEntries);
+                    frames.push({ formatVersion: 1, entries: chunk.map(({ globalId, tableName }) => ({ globalId, tableName })), json: JSON.stringify(chunk) });
+                }
+                return frames;
+            }
+            importPendingFrame(json) {
+                return { imported: JSON.parse(this.applyRemoteChanges(json)), alreadyPresent: [], rejected: [] };
+            }
             applyRemoteChanges(json) {
                 if (this.released) throw new Error('apply after release');
                 control.applies = (control.applies ?? 0) + 1;

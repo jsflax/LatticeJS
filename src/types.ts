@@ -119,12 +119,18 @@ export interface LatticeWasm {
     // Bulk insert
     addBulk(tableName: string, objects: Record<string, any>[]): { id: number; globalId: string }[];
 
+    /** Single-call detached read capability; absent runtimes must refuse. */
+    captureValuesSync?: (selectors: readonly import('./capture-values').CaptureSelector[]) => unknown;
+
     // Audit log / sync methods
     getPendingAuditLog(): string;
     /** The rows this store still OWES upstream (unsynced AND unmarked in
      *  _lattice_sync_state) — downloads excluded, stranded local writes and
      *  drained-in rows included. The drain predicate, in SQL. */
     getUnshippedAuditLog(): string;
+    /** Exact native frame capability; older runtimes must not fall back to JS numeric decoding. */
+    getUnshippedAuditFrames?: (localOnly: boolean, maxEntries: number) => import('./pending-drain').PendingAuditFrame[];
+    importPendingFrame?: (frame: string) => import('./pending-drain').PendingImportResult;
     /** Release this handle's native store reference. Shared holders retain
      *  storage. Legacy bindings only support read-only audit release and return
      *  void. Idempotent; no store method is valid on this handle afterwards. */

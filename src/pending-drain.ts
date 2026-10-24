@@ -1,81 +1,17 @@
-// Orphaned-write drain — rescuing un-ACKed writes out of an abandoned store.
+// Orphaned writes are rescued through opaque native audit frames. Native code
+// selects unsynced/unmarked entries, preserves source order and exact Int64 JSON
+// tokens, late-binds NoHistory values, and applies Core's guarded pending-import
+// mode. JS never parses or rewrites frame payloads. Sources remain unchanged;
+// only the live uploader's eventual ACK can establish delivery.
 //
-// THE DATA-LOSS CLASS
-// -------------------
-// A browser build never redials: `synchronizer_base::schedule_reconnect()` is
-// `#ifdef __EMSCRIPTEN__ return;`. When the sync socket dies, the wasm store
-// keeps accepting writes and keeps journalling them into `AuditLog` with
-// `isSynchronized = 0` — they are queued for an uploader whose transport is
-// gone. Detecting the death is app-side and never instantaneous (the socket
-// only reports `close` when the TCP/WS teardown lands), so there is always a
-// window in which a write is accepted into a store that can no longer ship it.
-//
-// The app-standard recovery is to redial with a FRESH store name
-// (`trip-e2e-${tripId}-${Date.now()}`, and its equivalents): a new path, a new
-// wasm instance, a new socket. That store starts empty, catches up from the
-// server, and is correct about everything the server knows — but the writes
-// stranded in the OLD store are not on the server, so they are not in the
-// catch-up, and nothing ever revisits the old store. `close()` does not help:
-// even after PR #6 it tears down the transport, it does not drain the queue
-// (and it could not — the socket is already dead). No redelivery mechanism
-// exists anywhere in the stack. The write is simply gone.
-//
-// Verified end-to-end by the joyjet orphan repro: a write made ~300ms after a
-// server SIGKILL never reaches the server — not by client resend within 60s,
-// not through `close()`, and not through the fresh store's catch-up.
-//
-// WHAT THIS MODULE DOES
-// ---------------------
-// The stranded set is knowable from JS: it is exactly the `AuditLog` rows the
-// old store still has with `isSynchronized = 0`, which the embind method
-// `getPendingAuditLog()` already returns (it returns ALL rows — the filtering
-// below is ours). Re-offering them through a LIVE store is also possible from
-// JS: `applyRemoteChanges(entries)` replays each row's SQL and then records the
-// row in the live store's `AuditLog` with `isSynchronized = 0`, which is the
-// state the uploader picks up (`query_audit_log_for_sync`'s branch 2:
-// `a.isSynchronized = 0 AND a.id > floor AND NOT EXISTS(sync_state row)`), and
-// the `AuditLog` INSERT itself fires the synchronizer's table observer →
-// `request_upload()`. So the drained rows upload on the live socket.
-//
-// This module is the wasm-free half of that: it decides WHICH rows are
-// pending, dedupes, and drives the two embind calls. Everything here is
-// testable in node against a fake store — see test/pending-drain.test.ts.
-//
-// WHY REPLAY IS SAFE TO REPEAT (IDEMPOTENCY)
-// ------------------------------------------
-// Three independent layers, in the order they fire:
-//
-//   1. THIS MODULE. Before offering anything it reads the target's own
-//      `AuditLog` and drops every row whose audit `globalId` is already there.
-//      Re-draining the same source into the same target is a no-op.
-//   2. THE DATA APPLY. `audit_log_entry::generate_instruction()` keys on the
-//      DATA row's `globalId` (`globalRowId` on the entry), never on `rowId`:
-//      INSERT is `INSERT ... ON CONFLICT(globalId) DO UPDATE SET ... WHERE
-//      <some value actually differs>`, UPDATE is `... WHERE globalId = ? AND
-//      (<some value actually differs>)`. A value-identical re-apply changes
-//      zero rows. This is also why replay works ACROSS stores at all: row ids
-//      differ between stores, global ids do not.
-//   3. THE SERVER. `receive()` skips any entry whose audit `globalId` is
-//      already in its `AuditLog`. A row drained into two different fresh
-//      stores uploads twice and lands once.
-//
-// ORDERING
-// --------
-// Drained rows are appended to the live store's `AuditLog` at drain time, so
-// they land AFTER everything the live socket has already caught up with, and
-// they carry ids above the sync slot's upload floor (the floor only ever
-// advances to ids that already existed). That is the intended order: the
-// server's view is authoritative for the catch-up, and the rescued write is a
-// later edit on top of it. Draining before catch-up settles would invert that
-// and let a stale catch-up frame overwrite the rescued value locally — which
-// is why `resumePendingFrom` waits for the socket to open AND for the received
-// counter to go quiet before draining (see `waitForCatchUpQuiet`).
+// The legacy object helpers below refuse unsafe numbers. They remain useful for
+// older safe-number journals, but are not an exact wire representation. Every
+// import still requires the new native boundary; no manual SQL fallback exists.
+import { assertSafeAuditValue, parseSafeAuditJSON } from './audit-json';
 
 /**
- * One `AuditLog` row, exactly as the wasm serialises it
- * (`audit_log_entry::to_json`) — plain JSON, safe to `structuredClone`,
- * `JSON.stringify`, journal to `localStorage`, or hand back to
- * `applyRemoteChanges` verbatim.
+ * One `AuditLog` row, in the legacy safe-number representation. Unsafe numbers are refused.
+ * Use PendingAuditFrame for exact storage, copying and retransmission.
  *
  * `globalId` identifies the CHANGE (the dedupe key everywhere in this
  * pipeline); `globalRowId` identifies the ROW the change applies to.
@@ -111,7 +47,105 @@ export interface AuditLogSource {
 
 /** The two embind methods needed to re-offer rows through a live store. */
 export interface DrainTarget extends AuditLogSource {
-    applyRemoteChanges(entriesJson: string): string;
+    importPendingFrame?: (json: string) => PendingImportResult;
+}
+
+export interface PendingAuditFrame {
+    readonly formatVersion: 1;
+    /** Metadata only; never used to reconstruct or rewrite json. */
+    readonly entries: readonly { readonly globalId: string; readonly tableName: string }[];
+    /** Exact native-serialized JSON array. Do not JSON.parse/stringify this. */
+    readonly json: string;
+}
+export interface PendingImportResult {
+    readonly imported: readonly string[];
+    readonly alreadyPresent: readonly string[];
+    readonly rejected: readonly string[];
+}
+export interface PendingFrameSource {
+    getUnshippedAuditFrames?: (localOnly: boolean, maxEntries: number) => PendingAuditFrame[];
+}
+export interface PendingFrameTarget {
+    importPendingFrame?: (json: string) => PendingImportResult;
+}
+export const MAX_PENDING_FRAME_ENTRIES = 1000;
+export const MAX_PENDING_FRAME_BYTES = 8 * 1024 * 1024;
+export const MAX_PENDING_TOTAL_ENTRIES = 4096;
+export const MAX_PENDING_TOTAL_BYTES = 16 * 1024 * 1024;
+
+export function copyPendingAuditFrames(raw: unknown): readonly PendingAuditFrame[] {
+    if (!Array.isArray(raw)) throw new TypeError('Invalid native pending frames');
+    const ids = new Set<string>();
+    let totalBytes = 0, totalEntries = 0;
+    return Object.freeze(raw.map(frame => {
+        if (!frame || frame.formatVersion !== 1 || typeof frame.json !== 'string' ||
+            new TextEncoder().encode(frame.json).length > MAX_PENDING_FRAME_BYTES ||
+            !Array.isArray(frame.entries) || !frame.entries.length || frame.entries.length > MAX_PENDING_FRAME_ENTRIES) {
+            throw new TypeError('Invalid native pending frame');
+        }
+        totalBytes += new TextEncoder().encode(frame.json).length;
+        totalEntries += frame.entries.length;
+        if (totalBytes > MAX_PENDING_TOTAL_BYTES || totalEntries > MAX_PENDING_TOTAL_ENTRIES) {
+            throw new RangeError('Pending audit aggregate limit exceeded');
+        }
+        const entries = frame.entries.map((entry: any) => {
+            if (!entry || typeof entry.globalId !== 'string' || !entry.globalId.length ||
+                typeof entry.tableName !== 'string' || !entry.tableName.length || ids.has(entry.globalId)) {
+                throw new TypeError('Invalid or duplicate pending frame identity');
+            }
+            ids.add(entry.globalId);
+            return Object.freeze({ globalId: entry.globalId, tableName: entry.tableName });
+        });
+        return Object.freeze({ formatVersion: 1 as const, entries: Object.freeze(entries), json: frame.json });
+    }));
+}
+
+export function readPendingAuditFrames(store: PendingFrameSource, options: PendingSelectOptions = {}, maxEntries = 200): readonly PendingAuditFrame[] {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > MAX_PENDING_FRAME_ENTRIES) {
+        throw new RangeError('maxEntries must be an integer between 1 and 1000');
+    }
+    if (typeof store.getUnshippedAuditFrames !== 'function') throw new Error('Native opaque pending audit frames capability required');
+    return copyPendingAuditFrames(store.getUnshippedAuditFrames(options.localOnly === true, maxEntries));
+}
+
+export function validatePendingImportResult(raw: unknown, offered: readonly string[]): PendingImportResult {
+    const result = raw as PendingImportResult;
+    if (!result || typeof result !== 'object') throw new TypeError('Invalid pending import report');
+    const expected = new Set(offered), seen = new Set<string>();
+    if (expected.size !== offered.length) throw new TypeError('Duplicate offered identity');
+    for (const key of ['imported', 'alreadyPresent', 'rejected'] as const) {
+        if (!Array.isArray(result[key])) throw new TypeError('Incomplete pending import report');
+        for (const id of result[key]) {
+            if (typeof id !== 'string' || !expected.has(id) || seen.has(id)) throw new TypeError('Invalid pending import report identity');
+            seen.add(id);
+        }
+    }
+    if (seen.size !== expected.size) throw new TypeError('Incomplete pending import report');
+    return { imported: [...result.imported], alreadyPresent: [...result.alreadyPresent], rejected: [...result.rejected] };
+}
+
+/** Core owns deduplication and schema validation. Metadata cannot grant success. */
+export async function drainPendingAuditFrames(target: PendingFrameTarget, input: readonly PendingAuditFrame[], options: Pick<DrainOptions, 'sleep'> = {}): Promise<DrainReport> {
+    if (typeof target.importPendingFrame !== 'function') throw new Error('Native guarded pending import capability required');
+    const frames = copyPendingAuditFrames(input), report = emptyDrainReport();
+    report.found = frames.reduce((sum, frame) => sum + frame.entries.length, 0);
+    const sleep = options.sleep ?? defaultSleep;
+    for (let i = 0; i < frames.length; ++i) {
+        const frame = frames[i], ids = frame.entries.map(entry => entry.globalId);
+        report.offered += ids.length;
+        try {
+            const result = validatePendingImportResult(target.importPendingFrame(frame.json), ids);
+            report.applied.push(...result.imported);
+            report.alreadyPresent += result.alreadyPresent.length;
+            report.failed.push(...result.rejected);
+        } catch {
+            // The source is never mutated, even if an ambiguous target outcome
+            // committed. A later Core import deduplicates exact known identities.
+            report.failed.push(...ids);
+        }
+        if (i + 1 < frames.length) await sleep(0);
+    }
+    return report;
 }
 
 export interface PendingSelectOptions {
@@ -123,7 +157,7 @@ export interface PendingSelectOptions {
      * sent: `query_audit_log_for_sync` deliberately applies **no**
      * `isFromRemote` filter — "any entry not synced by this sync_id is
      * pending, enabling cross-transport relay". Rows a sibling tab relayed in
-     * (via `applyRemoteChanges`, which stamps `isFromRemote = 1`,
+     * (via `importPendingFrame`, which stamps `isFromRemote = 1`,
      * `isSynchronized = 0`) are owed upstream by this store exactly like its
      * own writes, and a row this drain itself rescued is stamped the same way
      * — so `localOnly` would make a second-generation rescue lossy.
@@ -135,17 +169,13 @@ export interface PendingSelectOptions {
 }
 
 export interface DrainOptions extends PendingSelectOptions {
-    /**
-     * Model table names the target store knows. Rows for any other table are
-     * skipped — their SQL would fail against a schema that has no such table,
-     * and the failure is only visible in a C++ `printf`.
-     *
-     * Underscore-prefixed tables are ALWAYS allowed regardless of this list:
-     * see {@link isInternalTable}.
-     */
+    /** Optional safe-number legacy helper prefilter. This is not schema
+     * authority: Core validates installed table/column shapes for every import.
+     * Underscore names only bypass this convenience filter; they receive no
+     * authorization or automatic acceptance. Opaque rescue always defers to Core. */
     tables?: Iterable<string>;
     /**
-     * Rows per `applyRemoteChanges` call (default 200). Each call is one
+     * Rows per `importPendingFrame` call (default 200). Each call is one
      * synchronous C++ loop over the batch; chunking keeps a large backlog from
      * blocking the main thread in a single unbroken pass, and bounds what one
      * failing batch can take with it.
@@ -166,13 +196,13 @@ export interface DrainReport {
     alreadyPresent: number;
     /** Dropped: the target's schema has no such table. */
     unknownTable: number;
-    /** Rows handed to `applyRemoteChanges`. */
+    /** Entries handed to Core pending import (includes known/rejected results). */
     offered: number;
-    /** Audit `globalId`s the target actually applied — these will upload. */
+    /** Audit IDs durably imported as pending; upload/ACK is still asynchronous. */
     applied: string[];
     /**
-     * Offered but not applied (the row's SQL threw target-side). Nothing was
-     * recorded for them, so a later drain retries them.
+     * Rejected or ambiguous outcomes. The source stays intact; a later Core
+     * import deduplicates identities that committed before a report failure.
      */
     failed: string[];
 }
@@ -208,8 +238,9 @@ export function selectPendingUploads(
 ): PendingUploadRow[] {
     let raw: unknown;
     try {
-        raw = JSON.parse(auditLogJson);
+        raw = parseSafeAuditJSON(auditLogJson);
     } catch (err) {
+        if (err instanceof RangeError) throw err;
         console.warn('[Lattice] pending audit log is not JSON:', err);
         return [];
     }
@@ -262,7 +293,7 @@ function isInternalTable(tableName: string): boolean {
 function knownChangeIds(target: AuditLogSource): Set<string> {
     const ids = new Set<string>();
     try {
-        const raw = JSON.parse(target.getPendingAuditLog());
+        const raw = parseSafeAuditJSON(target.getPendingAuditLog());
         if (!Array.isArray(raw)) return ids;
         for (const entry of raw) {
             if (entry && typeof entry.globalId === 'string') ids.add(entry.globalId);
@@ -291,6 +322,8 @@ export async function drainPendingUploads(
     rows: readonly PendingUploadRow[],
     options: DrainOptions = {},
 ): Promise<DrainReport> {
+    assertSafeAuditValue(rows);
+    if (typeof target.importPendingFrame !== 'function') throw new Error('Native guarded pending import capability required');
     const report = emptyDrainReport();
     report.found = rows.length;
     if (rows.length === 0) return report;
@@ -310,18 +343,19 @@ export async function drainPendingUploads(
     report.offered = offer.length;
     if (offer.length === 0) return report;
 
-    const chunkSize = Math.max(1, options.chunkSize ?? 200);
+    const chunkSize = options.chunkSize ?? 200;
+    if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > MAX_PENDING_FRAME_ENTRIES) {
+        throw new RangeError('chunkSize must be an integer between 1 and 1000');
+    }
     const sleep = options.sleep ?? defaultSleep;
     const applied = new Set<string>();
 
     for (let i = 0; i < offer.length; i += chunkSize) {
         const chunk = offer.slice(i, i + chunkSize);
         try {
-            const resultJson = target.applyRemoteChanges(JSON.stringify(chunk));
-            const ids = JSON.parse(resultJson);
-            if (Array.isArray(ids)) {
-                for (const id of ids) if (typeof id === 'string') applied.add(id);
-            }
+            const result = validatePendingImportResult(target.importPendingFrame(JSON.stringify(chunk)), chunk.map(row => row.globalId));
+            for (const id of result.imported) applied.add(id);
+            for (const id of result.alreadyPresent) { known.add(id); report.alreadyPresent++; }
         } catch (err) {
             // A throwing chunk leaves its rows unrecorded target-side, so they
             // stay pending in the source and a later drain retries them.
@@ -332,7 +366,7 @@ export async function drainPendingUploads(
 
     for (const row of offer) {
         if (applied.has(row.globalId)) report.applied.push(row.globalId);
-        else report.failed.push(row.globalId);
+        else if (!known.has(row.globalId)) report.failed.push(row.globalId);
     }
     return report;
 }

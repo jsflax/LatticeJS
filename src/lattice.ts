@@ -1,6 +1,8 @@
 // Main Lattice class - user-facing API
 import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
+import { assertSafeAuditValue, parseSafeAuditJSON } from './audit-json';
+import { captureValuesSync as captureDetachedValues, type CaptureSelector, type CapturedValues } from './capture-values';
 import { checkedRowId, isExplicitModel } from './explicit-values';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
@@ -17,7 +19,10 @@ import {
 } from './sync-socket';
 import {
     selectPendingUploads,
-    drainPendingUploads,
+    drainPendingAuditFrames,
+    readPendingAuditFrames,
+    validatePendingImportResult,
+    type PendingAuditFrame,
     waitForCatchUpQuiet,
     emptyDrainReport,
     type PendingUploadRow,
@@ -636,7 +641,8 @@ export class Lattice {
      * @param path   the ABANDONED store's path (the previous name in a redial)
      * @param models retained for API compatibility; the audit open
      *               reconstructs the schema from the file and never migrates
-     * @returns un-ACKed rows, oldest first, as plain JSON (see
+     * Unsafe numeric values are refused; use pendingUploadFrames for exact Int64s.
+     * @returns un-ACKed safe-number rows, oldest first (see
      *          PendingUploadRow) — or **null when no store exists at `path`**
      *          (never created, snapshot gone, or a wrong name), which is NOT
      *          the same as an empty pending set. Journal them, count them,
@@ -649,7 +655,20 @@ export class Lattice {
         options?: PendingSelectOptions,
     ): Promise<PendingUploadRow[] | null> {
         await Lattice.ensureWasm();
-        return Lattice.readPendingAt(path, options);
+        return Lattice.readPendingAt(path, db => readPendingAuditFrames(db, options).flatMap(frame => selectPendingUploads(frame.json)));
+    }
+
+    /** One bounded synchronous native copy. Returns detached immutable physical
+     * values, never managed wrappers. No transaction may already be active. */
+    captureValuesSync(selectors: readonly CaptureSelector[]): CapturedValues {
+        this.assertOpen();
+        return captureDetachedValues(this.db, selectors);
+    }
+
+    /** Read-only exact audit frames for journalling/rescue; payloads must remain opaque. */
+    static async pendingUploadFrames(path: string, options?: PendingSelectOptions, maxEntries = 200): Promise<readonly PendingAuditFrame[] | null> {
+        await Lattice.ensureWasm();
+        return Lattice.readPendingAt(path, db => readPendingAuditFrames(db, options, maxEntries));
     }
 
     /**
@@ -693,7 +712,8 @@ export class Lattice {
         }
 
         await Lattice.ensureWasm();
-        const rows = await Lattice.readPendingAt(previousPath, options);
+        if (typeof this.db.importPendingFrame !== 'function') throw new Error('Native guarded pending import capability required');
+        const rows = await Lattice.readPendingAt(previousPath, db => readPendingAuditFrames(db, options));
         this.assertOpen();
         if (rows === null) {
             // A missing store is NOT an empty one: the caller named a path
@@ -706,14 +726,9 @@ export class Lattice {
         }
         if (rows.length === 0) return report;
 
-        const drained = await drainPendingUploads({
-            getPendingAuditLog: () => { this.assertOpen(); return this.db.getPendingAuditLog(); },
-            applyRemoteChanges: json => { this.assertOpen(); return this.db.applyRemoteChanges(json); },
-        }, rows, {
-            ...options,
-            tables: this.schemas.map((s) => s.tableName),
-            sleep: ms => this.sleepWhileOpen(ms),
-        });
+        const drained = await drainPendingAuditFrames({
+            importPendingFrame: json => { this.assertOpen(); return this.db.importPendingFrame!(json); },
+        }, rows, { sleep: ms => this.sleepWhileOpen(ms) });
         console.log(
             `[Lattice] drained ${drained.applied.length}/${drained.found} pending row(s) from ${previousPath}` +
             ` (already present: ${drained.alreadyPresent}, unknown table: ${drained.unknownTable}` +
@@ -732,10 +747,7 @@ export class Lattice {
      * sqlite handle may still hold open. So: restore only when MEMFS has
      * nothing.
      */
-    private static async readPendingAt(
-        path: string,
-        options?: PendingSelectOptions,
-    ): Promise<PendingUploadRow[] | null> {
+    private static async readPendingAt<T>(path: string, read: (db: LatticeWasm) => T): Promise<T | null> {
         let memfsHasIt = false;
         try {
             memfsHasIt = !!wasmModule.FS?.analyzePath?.(path)?.exists;
@@ -765,12 +777,9 @@ export class Lattice {
             return null;
         }
         try {
-            // The unshipped set (owed upstream) — see types.ts; the JS-side
-            // select is the belt (order, dedupe, isSynchronized).
-            return selectPendingUploads(db.getUnshippedAuditLog(), options);
-        } catch (err) {
-            console.warn('[Lattice] reading pending uploads failed for', path, err);
-            return [];
+            // Reading/capability failures propagate: never disguise them as
+            // an empty pending set or retry through lossy legacy conversion.
+            return read(db);
         } finally {
             // releaseStorage() drops the audit open\'s ONLY reference — the
             // sqlite connection actually closes (embind .delete() alone frees
@@ -1295,10 +1304,22 @@ export class Lattice {
             const observerId = this.db.observeAuditLog((json: string) => {
                 if (!active()) return;
                 try {
-                    const rawEntries = JSON.parse(json);
+                    const rawEntries = parseSafeAuditJSON(json);
                     const entries: AuditLogEntry[] = rawEntries.map((e: any) => this.parseAuditLogEntry(e));
                     if (active()) callback(entries);
                 } catch (error) { console.error('[Lattice.observe] Failed to parse audit log:', error); }
+            });
+            return () => this.db.removeAuditLogObserver(observerId);
+        });
+    }
+
+    /** Exact native audit JSON for transport/journalling. Never parse/re-encode it with JS Number. */
+    observeAuditFrames(callback: (frame: string) => void): () => void {
+        this.assertOpen();
+        if (typeof this.db.getUnshippedAuditFrames !== 'function') throw new Error('Native exact audit frame capability required');
+        return this.observeWhileOpen(active => {
+            const observerId = this.db.observeAuditLog((frame: string) => {
+                if (active() && typeof frame === 'string') callback(frame);
             });
             return () => this.db.removeAuditLogObserver(observerId);
         });
@@ -1324,10 +1345,12 @@ export class Lattice {
      * Parse a raw audit log entry from JSON into typed AuditLogEntry.
      */
     private parseAuditLogEntry(e: any): AuditLogEntry {
+        assertSafeAuditValue(e);
         const changedFields = typeof e.changedFields === 'string'
-            ? JSON.parse(e.changedFields) : e.changedFields;
+            ? parseSafeAuditJSON(e.changedFields) : e.changedFields;
         const changedFieldsNames = typeof e.changedFieldsNames === 'string'
-            ? JSON.parse(e.changedFieldsNames) : e.changedFieldsNames;
+            ? parseSafeAuditJSON(e.changedFieldsNames) : e.changedFieldsNames;
+        if (Object.hasOwn(e, 'synthesized') && typeof e.synthesized !== 'boolean') throw new TypeError('Invalid synthesized audit marker');
         let noHistoryNulls: string[] | undefined;
         if (Object.hasOwn(e, 'noHistoryNulls')) {
             const names = e.noHistoryNulls;
@@ -1367,9 +1390,10 @@ export class Lattice {
     private getPendingChanges(): AuditLogEntry[] {
         try {
             const json = this.db.getPendingAuditLog();
-            const rawEntries = JSON.parse(json);
+            const rawEntries = parseSafeAuditJSON(json);
             return rawEntries.map((e: any) => this.parseAuditLogEntry(e));
         } catch (e) {
+            if (e instanceof RangeError) throw e;
             console.error('[Lattice.getPendingChanges] Failed:', e);
             return [];
         }
@@ -1380,10 +1404,11 @@ export class Lattice {
      * Used internally to sync changes from other sources.
      */
     private applyRemoteChanges(entries: AuditLogEntry[]): string[] {
+        assertSafeAuditValue(entries);
+        if (typeof this.db.importPendingFrame !== 'function') throw new Error('Native guarded pending import capability required');
         try {
-            const json = JSON.stringify(entries);
-            const resultJson = this.db.applyRemoteChanges(json);
-            return JSON.parse(resultJson);
+            const result = validatePendingImportResult(this.db.importPendingFrame(JSON.stringify(entries)), entries.map(entry => entry.globalId));
+            return [...result.imported, ...result.alreadyPresent];
         } catch (e) {
             console.error('[Lattice.applyRemoteChanges] Failed:', e);
             return [];

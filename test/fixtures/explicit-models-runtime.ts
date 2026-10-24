@@ -7,6 +7,8 @@ import { DYNAMIC_OBJECT, LATTICE_REF, setWasmModule } from '../../src/storage';
 import { Lattice } from '../../src/lattice';
 import { runExplicitUnionCases } from './explicit-unions-runtime';
 import { runExplicitNoHistoryCases } from './explicit-nohistory-runtime';
+import { runPendingFrameCases } from './pending-frames-runtime';
+import { runCaptureValueCases } from './capture-values-runtime';
 
 export async function runExplicitModelCases({ module, test, newPath, register, dispose }: any) {
     const definition = {
@@ -187,4 +189,6 @@ export async function runExplicitModelCases({ module, test, newPath, register, d
 
     await runExplicitUnionCases({ module, test, newPath, register, dispose });
     await runExplicitNoHistoryCases({ module, test, newPath, register, dispose });
+    await runPendingFrameCases({ module, test, newPath, register, dispose });
+    await runCaptureValueCases({ module, test, newPath, register, dispose });
 }

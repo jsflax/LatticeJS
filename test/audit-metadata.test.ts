@@ -21,7 +21,7 @@ describe('audit wire metadata', () => {
         const native = {
             observeAuditLog(callback: typeof emit) { emit = callback; return 1; },
             removeAuditLogObserver: vi.fn(),
-            applyRemoteChanges(json: string) { applied.push(...JSON.parse(json)); return '["audit-fixture"]'; },
+            importPendingFrame(json: string) { applied.push(...JSON.parse(json)); return { imported: ["audit-fixture"], alreadyPresent: [], rejected: [] }; },
         };
         const db = facade(native), observed: any[] = [];
         const stop = db.observe((rows: any[]) => observed.push(...rows));
@@ -36,6 +36,9 @@ describe('audit wire metadata', () => {
         expect(applied).toEqual([entry()]);
         stop();
         expect(native.removeAuditLogObserver).toHaveBeenCalledWith(1);
+    });
+    it('refuses a malformed synthesized marker instead of silently dropping it', () => {
+        expect(() => facade().parseAuditLogEntry({ ...entry(), synthesized: 'true' })).toThrow(/synthesized/);
     });
     it('retains flat null, false synthesized, and empty marker arrays; leaves absent metadata absent', () => {
         const db = facade();
@@ -72,7 +75,7 @@ describe('audit wire metadata', () => {
         const received: any[] = [];
         const target = {
             getPendingAuditLog: () => '[]',
-            applyRemoteChanges(json: string) { received.push(...JSON.parse(json)); return '["audit-fixture"]'; },
+            importPendingFrame(json: string) { received.push(...JSON.parse(json)); return { imported: ["audit-fixture"], alreadyPresent: [], rejected: [] }; },
         };
         const result = await drainPendingUploads(target, selectPendingUploads(JSON.stringify([raw])));
         expect(result.applied).toEqual(['audit-fixture']);
