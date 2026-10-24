@@ -1,7 +1,8 @@
 """Test-only read-only inspection of a checkpointed Wasm fixture copy.
 
-Junction tables have no numeric row ID. Do not route them through findObject(0),
-redeclare them as application models, or use this diagnostic in production.
+Junction tables have no numeric row ID; union side tables have a reserved `case`
+column. Quote actual schema columns and retain real IDs where present. Do not
+redeclare side tables as application models or use this diagnostic in production.
 """
 from contextlib import closing
 import hashlib

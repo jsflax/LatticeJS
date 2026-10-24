@@ -93,11 +93,14 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
                     }
                 }
             }
-            // Model/union rows use actual native wrappers. Junctions have no id;
-            // inspect only a checkpointed test copy through read-only SQLite below.
-            const tables = [...prepared.definition.models.map((model: any) => model.tableName), ...contract.storage.unionTables];
+            // Primary model rows use actual native wrappers. Generic union-side
+            // getters cannot quote their reserved `case` column in this baseline;
+            // inspect these and id-less junctions through checked read-only SQLite.
+            // Typed public union codecs and parent reads above remain independent.
+            const tables = prepared.definition.models.map((model: any) => model.tableName);
+            const sideTables = [...contract.storage.unionTables, ...contract.storage.linkTables];
             assert.deepEqual([...new Set(snapshot.rows.map((row: any) => row.table))].sort(),
-                [...tables, ...contract.storage.linkTables].sort());
+                [...tables, ...sideTables].sort());
             for (const table of tables) {
                 const expected = snapshot.rows.filter((row: any) => row.table === table);
                 const identities = native.objectIdentities(table, null, null, null, null, null, null);
@@ -127,11 +130,11 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
                 }
             }
             assert.equal(unionValues, snapshot.logicalUnions.length);
-            assert.equal(typeof inspectJunctions, "function", "Id-less junction tables require test-only physical inspection");
+            assert.equal(typeof inspectJunctions, "function", "Physical side tables require test-only inspection");
             native.walCheckpoint();
-            const junctions = await inspectJunctions({ stage, snapshot, tables: contract.storage.linkTables, filePath });
+            const sideTableInspection = await inspectJunctions({ stage, snapshot, tables: sideTables, filePath });
             reports.push({ stage, modelTables: 8, unionFamilies: 4, nativeManagedTables: tables.length,
-                rows: snapshot.rows.length, typedCells, physicalCells, unionValues, junctions, exactPhysicalRows: true });
+                rows: snapshot.rows.length, typedCells, physicalCells, unionValues, sideTableInspection, exactPhysicalRows: true });
             return typedByIdentity;
         };
         const rows = await verify(manifest.baseline, 'baseline');

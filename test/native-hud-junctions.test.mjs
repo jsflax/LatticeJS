@@ -38,3 +38,20 @@ test('test-only junction extraction refuses invented identity/columns instead of
     assert.throws(() => execFileSync('python3', [inspector, input.store, input.request], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), /Actual junction schema differs from manifest/);
     assert.equal(sha(input.store), before);
 });
+test('test-only union-side extraction quotes reserved case and keeps exact physical values', () => {
+    const input = fixture();
+    execFileSync('python3', ['-c', `import sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as db:
+ db.execute('CREATE TABLE "_HUDSource_spec" (id INTEGER, globalId TEXT, "case" TEXT, n INTEGER, value REAL)')
+ db.execute('INSERT INTO "_HUDSource_spec" VALUES (?,?,?,?,?)',(7,'fixture-union','literal',9007199254740993,0.0))
+`, input.store], { env: { ...process.env, TMPDIR: input.directory, PYTHONDONTWRITEBYTECODE: '1' } });
+    const union = { table: '_HUDSource_spec', globalId: 'fixture-union', localId: '7', fields: {
+        case: { kind: 'text', value: 'literal' }, n: { kind: 'int64', value: '9007199254740993' },
+        value: { kind: 'float64', bits: '0000000000000000' },
+    } };
+    const rows = [...input.rows, union], before = sha(input.store);
+    fs.writeFileSync(input.request, JSON.stringify({ tables: ['_HUDNode_HUDNode_parent', '_HUDSource_spec'], rows }));
+    const result = JSON.parse(execFileSync('python3', [inspector, input.store, input.request], { encoding: 'utf8' }));
+    assert.deepEqual(result.rows, rows);
+    assert.equal(sha(input.store), before); assert.equal(result.fileSHA256, before);
+});

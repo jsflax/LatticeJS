@@ -52,12 +52,18 @@ for (const name of ['baseline.lattice', 'native-reference.lattice']) {
 }
 const js = describe(path.join(build, 'lattice.js')), wasm = describe(path.join(build, 'lattice.wasm'));
 const prior = readJSON(args.get('--runtime-receipt'));
-assert.equal(prior.passed, true, 'First qualify the same artifact with the 33-case runtime harness');
-assert.equal(prior.tests.length, 33);
+assert.equal(prior.passed, true, 'First qualify the same artifact with the combined 39-case runtime harness');
+assert.equal(prior.tests.length, 39);
+assert.ok(prior.tests.every(test => test.passed === true), 'Every native case must pass');
+for (const name of [
+    'detached native capture preserves primitive codecs and linked cycles without wrappers',
+    'detached capture refuses outer transactions and preflight failures then allows ordinary writes',
+    'detached capture refuses malformed junctions and table observers invalidate links and NoHistory',
+]) assert.ok(prior.tests.some(test => test.name === name), `Missing native qualification: ${name}`);
 assert.equal(prior.receipt.js.sha256, js.sha256);
 assert.equal(prior.receipt.wasm.sha256, wasm.sha256);
 const sourcePaths = ['src/lattice.ts', 'src/decorators.ts', 'src/explicit-models.ts', 'src/explicit-values.ts',
-    'src/storage.ts', 'src/types.ts', 'wasm/bindings.cpp', 'test/native-hud-interop.mjs',
+    'src/storage.ts', 'src/types.ts', 'src/capture-values.ts', 'wasm/bindings.cpp', 'wasm/capture-values.hpp', 'test/native-hud-interop.mjs',
     'test/fixtures/native-hud-interop-runtime.ts', 'test/fixtures/native-hud-interop-values.ts', 'test/fixtures/native-hud-junctions.py'];
 const receipt = { startedAt: new Date().toISOString(), inputs, candidate: { js, wasm, runtimeGate: describe(args.get('--runtime-receipt')),
     latticeJS: source(repo), core: source(core), hud: source(hud),
@@ -67,7 +73,9 @@ const receipt = { startedAt: new Date().toISOString(), inputs, candidate: { js, 
     coreFiles: ['Sources/LatticeSwiftCppBridge/src/dynamic_object.cpp', 'Sources/LatticeSwiftCppBridge/include/dynamic_object.hpp',
         'Sources/LatticeSwiftCppBridge/include/lattice.hpp', 'Sources/LatticeCore/src/sync.cpp',
         'Sources/LatticeCore/include/lattice/sync.hpp', 'Sources/LatticeCore/include/lattice/lattice.hpp'].map(name => describe(path.join(core, name))) },
-    native: { pins: manifest.nativeDependencyPins, sourceCommit: manifest.callerRecordedSourceCommit,
+    native: { pins: manifest.nativeDependencyPins, recordedHUDDependencyPins: manifest.recordedHUDDependencyPins,
+        packageResolvedRole: manifest.packageResolvedRole, candidateBuildManifestSHA256: manifest.candidateBuildManifestSHA256,
+        candidateSourceProvenanceSHA256: manifest.candidateSourceProvenanceSHA256, sourceCommit: manifest.callerRecordedSourceCommit,
         registryHash: manifest.registryHash, contractHash: manifest.contractHash, packageResolvedSHA256: manifest.packageResolvedSHA256 } };
 const logs = [], asyncErrors = [], fatalLogs = [];
 let droppedLogs = 0, module, observations, baseline, final, failure, output;
