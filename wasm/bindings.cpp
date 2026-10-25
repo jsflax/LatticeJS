@@ -2962,6 +2962,11 @@ EMSCRIPTEN_BINDINGS(lattice) {
     function("_migration_delete_all", &migration_delete_all);
     function("_migration_execute_sql", &migration_execute_sql);
     function("_lifecycleDiagnostics", &JsLattice::lifecycleDiagnostics);
+    // Read-only diagnostic for deterministic capture statement-budget tests.
+    // Kept separate from the fixed lifecycle diagnostic shape/public TS API.
+    function("_captureStatementCount", optional_override([]() {
+        return lattice::database::thread_statement_count();
+    }));
     // Version check
     function("getWasmVersion", &getWasmVersion);
 

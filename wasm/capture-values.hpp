@@ -184,19 +184,21 @@ inline snapshot capture_native(const std::shared_ptr<lattice::swift_lattice>& ow
                 }
             }
         }
-        // Link getters currently read every rhs for a parent and assume a
-        // related model exists. Bound/validate actual registered junctions
-        // before calling them; malformed duplicate/dangling links must refuse.
-        std::map<std::string, std::set<std::string>> model_identities;
+        // Validate installed junction shape before detached identity copy;
+        // malformed duplicate/dangling links must refuse.
+        // Keep each stored spelling: junction comparison is case-insensitive,
+        // but detached identities must match the target row, not its RHS text.
+        std::map<std::string, std::map<std::string, std::string>> model_identities;
         for (const auto& plan : plans) {
             const auto identities = db.query("SELECT globalId FROM " + quote_identifier(plan.selection.table) + " ORDER BY id LIMIT " + std::to_string(plan.selection.max_rows + 1));
             require(identities.size() == plan.count, "Capture identity set changed");
             auto& known = model_identities[plan.selection.table];
             for (const auto& identity : identities) {
                 const auto global = text(identity, "globalId");
-                require(!global.empty() && valid_utf8(global) && known.insert(folded(global)).second, "Invalid or duplicate captured identity");
+                require(!global.empty() && valid_utf8(global) && known.emplace(folded(global), global).second, "Invalid or duplicate captured identity");
             }
         }
+        std::map<std::string, std::map<std::string, link>> captured_links;
         for (const auto& plan : plans) for (const auto& property : plan.properties) {
             if (property.kind != lattice::property_kind::link) continue;
             const auto mapping = plan.selection.table + ":" + property.name;
@@ -232,11 +234,13 @@ inline snapshot capture_native(const std::shared_ptr<lattice::swift_lattice>& ow
             const auto links = db.query("SELECT lhs,rhs,globalId FROM " + quote_identifier(junction) + " LIMIT " + std::to_string(plan.selection.max_rows + 1));
             require(links.size() == lengths.size(), "Capture junction changed during preflight");
             std::set<std::string> parents, globals;
+            auto& detached_links = captured_links[mapping];
             for (const auto& link_row : links) {
                 const auto lhs = text(link_row, "lhs"), rhs = text(link_row, "rhs"), global = text(link_row, "globalId");
                 require(valid_utf8(lhs) && valid_utf8(rhs) && valid_utf8(global), "Invalid UTF-8 capture junction identity");
                 require(parents.insert(folded(lhs)).second && globals.insert(folded(global)).second, "Duplicate capture to-one link");
                 require(model_identities.at(plan.selection.table).count(folded(lhs)) != 0 && model_identities.at(property.target_table).count(folded(rhs)) != 0, "Dangling capture to-one link");
+                detached_links.emplace(folded(lhs), link{property.target_table, model_identities.at(property.target_table).at(folded(rhs))});
             }
         }
         result.rows.reserve(total_rows);
@@ -246,16 +250,24 @@ inline snapshot capture_native(const std::shared_ptr<lattice::swift_lattice>& ow
             require(objects.size() == plan.count, "Capture row set changed during materialization");
             for (const auto& managed : objects) {
                 lattice::dynamic_object object(managed);
+                // objects() already hydrated these scalar values inside this
+                // same held read. The cache lives only for this detached copy.
+                // A link-only model may have no scalar payload at all; do not
+                // let enable_row_cache's empty-row refresh add a query for it.
+                if (!managed.source.values.empty()) object.enable_row_cache();
                 row copied{plan.selection.table, managed.global_id(), {}};
                 require(!copied.global_id.empty(), "Capture requires a global identity"); output.string(copied.table); output.string(copied.global_id);
                 for (const auto& property : plan.properties) {
                     if (property.kind == lattice::property_kind::link) {
-                        auto linked = object.get_object(property.name);
-                        if (!linked.lattice) copied.values.emplace(property.name, nullptr);
+                        // Preflight validated the entire junction in this read
+                        // scope. Avoid rehydrating a target graph just for its ID.
+                        const auto& links = captured_links.at(plan.selection.table + ":" + property.name);
+                        const auto found = links.find(folded(copied.global_id));
+                        if (found == links.end()) copied.values.emplace(property.name, nullptr);
                         else {
-                            link target{linked.get_table_name(), linked.get_string("globalId")};
+                            const auto& target = found->second;
                             require(target.table == property.target_table && !target.global_id.empty(), "Capture received an invalid linked identity");
-                            output.string(target.table); output.string(target.global_id); copied.values.emplace(property.name, std::move(target));
+                            output.string(target.table); output.string(target.global_id); copied.values.emplace(property.name, target);
                         }
                     } else if (!object.has_value(property.name)) {
                         require(property.nullable, "Capture encountered a required NULL"); copied.values.emplace(property.name, nullptr);

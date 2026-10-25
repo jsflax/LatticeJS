@@ -847,7 +847,7 @@ try {
     process.off('uncaughtException', onAsyncError);
     process.off('unhandledRejection', onAsyncError);
     Object.assign(console, oldConsole);
-    const passed = !failure && asyncErrors.length === 0 && fatalLogs.length === 0 && reports.length === 39 && reports.every(test => test.passed);
+    const passed = !failure && asyncErrors.length === 0 && fatalLogs.length === 0 && reports.length === 42 && reports.every(test => test.passed);
     const result = {
         passed, scope, receipt, baseline, final: diag(), elapsedMs: performance.now() - started,
         tests: reports, failure, asyncErrors, fatalLogs,

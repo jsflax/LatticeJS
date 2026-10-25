@@ -114,4 +114,100 @@ export async function runCaptureValueCases({ module, test, newPath, register, di
             return { duplicateLinkRefused: true, danglingLinkRefused: true, junctionPayloadBound: true, parentSentinelObserved: true, noHistoryObserved: true, noObserverReentry: true };
         } finally { native.removeTableObserver(table, observer); }
     }));
+    await test('detached scalar capture statement work is independent of selected cells and row count', () => fixture(async ({ db, add }) => {
+        assert.equal(typeof module._captureStatementCount, 'function', 'Capture SQL diagnostic requires the candidate artifact');
+        const measure = (properties: string[]) => {
+            const before = module._captureStatementCount();
+            assert.equal(typeof before, 'bigint');
+            const captured = (db as Lattice).captureValuesSync([{ table, properties, maxRows: 64 }]);
+            const statements = module._captureStatementCount() - before;
+            assert.ok(statements > 0n, 'The real SQLite capture must execute statements');
+            return { captured, statements };
+        };
+        const first = await add('first', -(1n << 63n), -0.125);
+        const narrow = measure(['label']);
+        const properties = ['label', 'seq', 'at', 'optional', 'blob'];
+        const wide = measure(properties);
+        assert.equal(wide.statements, narrow.statements, 'Selecting additional hydrated scalar cells must not issue per-cell SQL');
+        for (let i = 1; i < 64; ++i) await add(`row-${i}`, BigInt(i), i + 0.25);
+        const many = measure(properties);
+        assert.equal(many.captured.rows.length, 64);
+        assert.equal(many.statements, wide.statements, 'Additional rows must not issue per-row scalar SELECTs');
+        const saved = many.captured.rows.find(row => row.globalId === first.globalId)!;
+        assert.deepEqual({ ...saved.values }, { label: 'first', seq: -(1n << 63n), at: -0.125, optional: null, blob: [0, 128, 255] });
+        first.optional = 'present'; first.seq = (1n << 63n) - 1n; first.blob = new Uint8Array();
+        const updated = measure(properties).captured.rows.find(row => row.globalId === first.globalId)!;
+        assert.equal(updated.values.optional, 'present'); assert.equal(updated.values.seq, (1n << 63n) - 1n); assert.deepEqual(updated.values.blob, []);
+        first.optional = null;
+        assert.equal(measure(properties).captured.rows.find(row => row.globalId === first.globalId)!.values.optional, null);
+        assert.equal(saved.values.optional, null); assert.equal(saved.values.seq, -(1n << 63n)); assert.deepEqual(saved.values.blob, [0, 128, 255]);
+        return { rows: 64, selectedPrimitiveFields: 5, narrowStatements: String(narrow.statements), wideStatements: String(wide.statements), manyStatements: String(many.statements), freshNullAndBlob: true };
+    }));
+    await test('detached cross-table links reuse identities with nullable repeated targets and no per-parent SQL', async () => {
+        const { CaptureOwner: Owner, CaptureTarget: Target } = defineModels({ formatVersion: 1, models: [
+            { tableName: 'CaptureOwner', properties: [
+                { name: 'target', kind: 'link', type: 'int', targetTable: 'CaptureTarget', nullable: true },
+            ] },
+            { tableName: 'CaptureTarget', properties: [
+                { name: 'label', kind: 'primitive', type: 'string', nullable: false },
+                { name: 'owner', kind: 'link', type: 'int', targetTable: 'CaptureOwner', nullable: true },
+            ] },
+        ] } as const);
+        const native = new module.Lattice(newPath('capture-repeated-links'), buildSchemas([Owner, Target])); register(native);
+        const db = Object.assign(Object.create(Lattice.prototype), { db: native }) as Lattice;
+        const wrappers = new Set<any>();
+        const add = async (row: any) => { wrappers.add(row[DYNAMIC_OBJECT]); await db.add(row); return row; };
+        const selection = [
+            { table: 'CaptureOwner', properties: ['target'], maxRows: 64 },
+            { table: 'CaptureTarget', properties: ['label', 'owner'], maxRows: 2 },
+        ];
+        const capture = () => {
+            const before = module._captureStatementCount();
+            const result = db.captureValuesSync(selection);
+            return { result, statements: module._captureStatementCount() - before };
+        };
+        setWasmModule(module);
+        try {
+            const target = await add(new Target({ label: 'shared', owner: null }));
+            const first = await add(new Owner({ target })); target.owner = first;
+            assert.throws(() => db.captureValuesSync([selection[0]]), /link target must also be selected/);
+            assert.equal(db.captureValuesSync([{ table: 'CaptureTarget', properties: ['label'] }]).rows[0]!.values.label, 'shared', 'Unselected link fields must not require their target table');
+            const one = capture();
+            const owners = [first];
+            for (let i = 1; i < 64; ++i) owners.push(await add(new Owner({ target: i === 63 ? null : target })));
+            const many = capture();
+            assert.equal(many.statements, one.statements, 'Repeated target links must not hydrate/query each parent');
+            assert.equal(many.result.rows.length, 65);
+            for (const owner of owners) assert.deepEqual(many.result.rows.find(row => row.globalId === owner.globalId)!.values.target,
+                owner === owners[63] ? null : { table: 'CaptureTarget', globalId: target.globalId });
+            assert.deepEqual(many.result.rows.find(row => row.globalId === target.globalId)!.values.owner, { table: 'CaptureOwner', globalId: first.globalId });
+            first.target = null; owners[63].target = target;
+            const next = capture().result;
+            assert.equal(next.rows.find(row => row.globalId === first.globalId)!.values.target, null);
+            assert.deepEqual(next.rows.find(row => row.globalId === owners[63].globalId)!.values.target, { table: 'CaptureTarget', globalId: target.globalId });
+            assert.deepEqual(many.result.rows.find(row => row.globalId === first.globalId)!.values.target, { table: 'CaptureTarget', globalId: target.globalId });
+            return { repeatedTargets: 63, nullable: true, crossTableCycle: true, unselectedTargetRefused: true, scalarOnlyAllowed: true, oneStatements: String(one.statements), manyStatements: String(many.statements) };
+        } finally { setWasmModule(null); for (const wrapper of wrappers) wrapper.delete(); dispose(native); }
+    });
+    await test('detached junction aliases preserve canonical stored identity spelling', () => fixture(async ({ native, add }) => {
+        const first = await add('first', 1n, 0), second = await add('second', 2n, 0);
+        first.parent = second;
+        const firstID = 'a1111111-1111-4111-8111-111111111111', secondID = 'b2222222-2222-4222-8222-222222222222';
+        const oldFirst = first.globalId, oldSecond = second.globalId;
+        const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
+        native.beginWrite();
+        try {
+            // Real stored UUIDs and real Core junction; only case differs from
+            // each target row. No lazy wrappers are used after this setup.
+            for (const sql of [
+                `UPDATE DetachedCapture SET globalId=${quote(firstID)} WHERE globalId=${quote(oldFirst)}`,
+                `UPDATE DetachedCapture SET globalId=${quote(secondID)} WHERE globalId=${quote(oldSecond)}`,
+                `UPDATE _DetachedCapture_DetachedCapture_parent SET lhs=${quote(firstID.toUpperCase())},rhs=${quote(secondID.toUpperCase())}`,
+            ]) assert.equal(native.debugQueryCount(sql), 0);
+        } finally { native.commitWrite(); }
+        const captured = captureValuesSync(native, selectors);
+        assert.deepEqual(captured.rows.find(row => row.globalId === firstID)!.values.parent, { table, globalId: secondID });
+        assert.equal(captured.rows.find(row => row.globalId === secondID)!.values.parent, null);
+        return { canonicalTargetUUID: true, caseInsensitiveJunction: true, absentLinkIsNull: true };
+    }));
 }
