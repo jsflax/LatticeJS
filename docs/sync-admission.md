@@ -19,9 +19,10 @@ const db = await Lattice.open(':memory:personal-replica', models, {
     },
   },
 });
-// Revocation retires pending admission and closes the transport immediately.
+// Revocation retires pending admission and initiates transport closure immediately.
 cancellation.abort();
-await db.close();
+const closed = await db.close();
+// Require closed.transport === 'closed' before replacing this owner.
 ```
 
 `open()` returns a usable local database before remote admission completes. Use
@@ -68,6 +69,16 @@ runs fresh admission; no automatic retry policy is added. `close()` cancels the
 admitted transport synchronously, so callers requiring upload drain must request and
 finish that drain before close. The normal close receipt still reports actual pending
 uploads, transport retirement, snapshot disposition, and native release.
+
+Logical cancellation is immediate; physical WebSocket closure can take longer.
+The transport receipt waits for every raw socket belonging to the admitted owner,
+including superseded attempts and a socket returned by a factory that cancelled
+the owner reentrantly. A cancelled admission that never constructed a socket is
+closed. A synthetic proxy close or a thrown raw `close()` call does not establish
+physical closure: an unobserved close reports `timeout`. A later close event releases
+the retained listener but does not rewrite that earlier receipt. This correction is
+covered by JavaScript lifecycle tests; the historical browser receipts below do not
+establish delayed-close ordering.
 
 ## Qualification
 

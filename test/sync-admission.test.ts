@@ -29,6 +29,11 @@ function setup(beforeConnect: (context: SyncAdmissionContext) => Promise<void>, 
     return { owner, factory, sockets };
 }
 
+class DelayedCloseSocket extends Socket {
+    close = vi.fn(() => { this.readyState = 2; });
+    finishClose() { this.readyState = 3; this.fire('close', { code: 1000, reason: '', wasClean: true }); }
+}
+
 describe('per-owner sync admission', () => {
     it('waits for admission before constructing a socket and passes a frozen attempt context', async () => {
         const admission = deferred(), calls: SyncAdmissionContext[] = [];
@@ -161,6 +166,78 @@ describe('per-owner sync admission', () => {
         const owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => socket as unknown as WebSocket);
         const transport = owner.createSocket(url); await tick();
         expect(transport.readyState).toBe(3); expect(socket.close).toHaveBeenCalledOnce(); owner.dispose();
+    });
+
+    it('retires proxy delivery immediately but awaits the raw close event', async () => {
+        const raw = new DelayedCloseSocket();
+        const owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => raw as unknown as WebSocket);
+        const proxy = owner.createSocket(url); await tick(); raw.fire('open');
+        const messages = vi.fn(), closed = vi.fn();
+        proxy.addEventListener('message', messages); proxy.addEventListener('close', closed);
+        owner.dispose();
+        let finished = false;
+        const closing = owner.waitForClose(1000).then(result => { finished = true; return result; });
+        raw.fire('message', { data: 'retired bytes' }); await tick();
+        expect(proxy.readyState).toBe(3); expect(raw.readyState).toBe(2);
+        expect(closed).toHaveBeenCalledOnce(); expect(messages).not.toHaveBeenCalled(); expect(finished).toBe(false);
+        raw.finishClose();
+        expect(await closing).toBe('closed'); expect(closed).toHaveBeenCalledOnce();
+    });
+
+    it('accounts for the raw socket returned after factory-reentrant cancellation', async () => {
+        const raw = new DelayedCloseSocket();
+        let owner!: SyncAdmissionOwner;
+        owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => {
+            owner.dispose(); return raw as unknown as WebSocket;
+        });
+        const proxy = owner.createSocket(url); await tick();
+        expect(proxy.readyState).toBe(3); expect(raw.close).toHaveBeenCalledOnce();
+        expect(await owner.waitForClose(0)).toBe('timeout');
+        raw.finishClose(); expect(await owner.waitForClose(0)).toBe('closed');
+    });
+
+    it('retains all still-closing superseded attempts, not just the current proxy', async () => {
+        const raws: DelayedCloseSocket[] = [];
+        const owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => {
+            const raw = new DelayedCloseSocket(); raws.push(raw); return raw as unknown as WebSocket;
+        });
+        owner.createSocket(url); await tick(); owner.createSocket(url); await tick(); owner.dispose();
+        expect(raws).toHaveLength(2); expect(raws.every(raw => raw.close.mock.calls.length === 1)).toBe(true);
+        raws[1].finishClose(); expect(await owner.waitForClose(0)).toBe('timeout');
+        raws[0].finishClose(); expect(await owner.waitForClose(0)).toBe('closed');
+    });
+
+    it.each(['resolve', 'reject'] as const)('cancelled admission without a raw socket closes; late %s remains inert', async settle => {
+        const admission = deferred(), { owner, factory } = setup(() => admission.promise);
+        owner.createSocket(url); await tick(); owner.dispose();
+        expect(await owner.waitForClose(0)).toBe('closed');
+        if (settle === 'resolve') admission.resolve(); else admission.reject(new Error('private failure'));
+        await tick(); expect(factory).not.toHaveBeenCalled(); expect(await owner.waitForClose(0)).toBe('closed');
+    });
+
+    it('a raw close throw is unknown until a real close is observed', async () => {
+        const raw = new DelayedCloseSocket(); raw.close.mockImplementation(() => { throw new Error('close failed'); });
+        const owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => raw as unknown as WebSocket);
+        owner.createSocket(url); await tick(); raw.fire('open'); owner.dispose();
+        expect(await owner.waitForClose(0)).toBe('timeout'); expect(raw.readyState).toBe(1);
+        raw.finishClose(); expect(await owner.waitForClose(0)).toBe('closed');
+    });
+
+    it('configuration failure retains the raw closure barrier after logical refusal', async () => {
+        const raw = new DelayedCloseSocket();
+        Object.defineProperty(raw, 'binaryType', { set() { throw new Error('configuration failed'); } });
+        const owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => raw as unknown as WebSocket);
+        const proxy = owner.createSocket(url); await tick(); owner.dispose();
+        expect(proxy.readyState).toBe(3); expect(raw.close).toHaveBeenCalledOnce();
+        expect(await owner.waitForClose(0)).toBe('timeout');
+        raw.finishClose(); expect(await owner.waitForClose(0)).toBe('closed');
+    });
+
+    it('already observed natural closure needs no synthetic raw close', async () => {
+        const raw = new DelayedCloseSocket();
+        const owner = new SyncAdmissionOwner({ websocketUrl: url, beforeConnect: async () => {} }, 'a', () => raw as unknown as WebSocket);
+        owner.createSocket(url); await tick(); raw.finishClose(); owner.dispose();
+        expect(await owner.waitForClose(0)).toBe('closed'); expect(raw.close).not.toHaveBeenCalled();
     });
 
     it('rejects credential URLs, bearer tokens, missing hooks, and pre-aborted lifetimes', () => {

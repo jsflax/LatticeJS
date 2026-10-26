@@ -18,6 +18,14 @@ class AdmittedSocket extends EventTarget {
     private readonly controller = new AbortController();
     private detach: (() => void) | null = null;
     private retired = false;
+    // Logical retirement must suppress callbacks immediately, but does not
+    // prove the browser finished closing the underlying transport.
+    private physicalSocket: WebSocket | null = null;
+    private detachPhysical: (() => void) | null = null;
+    private creatingSocket = false;
+    private physicalSettled = false;
+    private resolvePhysical!: () => void;
+    readonly physicalClose = new Promise<void>(resolve => { this.resolvePhysical = resolve; });
 
     constructor(
         context: Omit<SyncAdmissionContext, 'signal'>,
@@ -36,9 +44,17 @@ class AdmittedSocket extends EventTarget {
             const result = await admitted;
             if (this.retired || this.controller.signal.aborted) return;
             if (result !== undefined) throw new TypeError('beforeConnect must resolve without a value');
-            const socket = this.makeSocket(this.url);
+            let socket: WebSocket;
+            this.creatingSocket = true;
+            try { socket = this.makeSocket(this.url); this.physicalSocket = socket; }
+            finally { this.creatingSocket = false; }
+            // This listener survives finish(), including a cancellation from
+            // inside makeSocket. Register it before any fallible configuration.
+            const physicallyClosed = () => this.finishPhysical();
+            this.detachPhysical = () => socket.removeEventListener('close', physicallyClosed);
+            socket.addEventListener('close', physicallyClosed);
             // A test factory or host shim may dispose the owner reentrantly.
-            if (this.retired) { socket.close(1000, 'lattice admission cancelled'); return; }
+            if (this.retired) { this.closePhysical(1000, 'lattice admission cancelled'); return; }
             this.socket = socket;
             socket.binaryType = this.binaryType;
             const open = () => {
@@ -64,11 +80,11 @@ class AdmittedSocket extends EventTarget {
                 socket.removeEventListener('close', close);
             };
         }).catch(() => {
-            if (this.retired) return;
-            const socket = this.socket;
-            this.dispatchEvent(socketEvent('error'));
-            this.finish(1008, 'sync admission failed', false);
-            try { socket?.close(1000, 'sync admission failed'); } catch { /* Retired locally. */ }
+            if (!this.retired) {
+                this.dispatchEvent(socketEvent('error'));
+                this.finish(1008, 'sync admission failed', false);
+            }
+            this.closePhysical(1000, 'sync admission failed');
         });
     }
 
@@ -79,9 +95,29 @@ class AdmittedSocket extends EventTarget {
 
     close(code = 1000, reason = 'lattice admission cancelled'): void {
         if (this.retired) return;
-        const socket = this.socket;
         this.finish(code, reason, true);
-        try { socket?.close(code, reason); } catch { /* The local attempt is already retired. */ }
+        this.closePhysical(code, reason);
+    }
+
+    private closePhysical(code: number, reason: string): void {
+        const socket = this.physicalSocket;
+        if (!socket) {
+            // A cancelled pending admission can never construct a socket. A
+            // factory currently on the stack can still return one, however.
+            if (!this.creatingSocket) this.finishPhysical();
+            return;
+        }
+        try { socket.close(code, reason); } catch { /* Await real closure; a throw is not closure. */ }
+        try { if (socket.readyState === 3) this.finishPhysical(); } catch { /* Closure remains unknown. */ }
+    }
+
+    private finishPhysical(): void {
+        if (this.physicalSettled) return;
+        this.physicalSettled = true;
+        try { this.detachPhysical?.(); } catch { /* Physical closure is already observed. */ }
+        this.detachPhysical = null;
+        this.physicalSocket = null;
+        this.resolvePhysical();
     }
 
     private finish(code: number, reason: string, wasClean: boolean): void {
@@ -93,6 +129,7 @@ class AdmittedSocket extends EventTarget {
         this.readyState = 3;
         this.onRetire();
         this.dispatchEvent(socketEvent('close', { code, reason, wasClean }));
+        if (!this.creatingSocket && !this.physicalSocket) this.finishPhysical();
     }
 }
 
@@ -113,6 +150,7 @@ export class SyncAdmissionOwner {
     private generation = 0;
     private disposed = false;
     private current: AdmittedSocket | null = null;
+    private readonly physicalAttempts = new Set<AdmittedSocket>();
     private readonly beforeConnect: NonNullable<SyncConfiguration['beforeConnect']>;
     private readonly externalSignal?: AbortSignal;
     private readonly externalAbort = () => this.dispose();
@@ -149,6 +187,8 @@ export class SyncAdmissionOwner {
         socket = new AdmittedSocket({ websocketUrl: this.url, instanceId: this.instanceId,
             connectionGeneration: ++this.generation }, this.beforeConnect, this.makeSocket,
         () => { if (this.current === socket) this.current = null; }, url);
+        this.physicalAttempts.add(socket);
+        void socket.physicalClose.then(() => this.physicalAttempts.delete(socket));
         this.current = socket;
         return socket;
     };
@@ -159,5 +199,20 @@ export class SyncAdmissionOwner {
         this.externalSignal?.removeEventListener('abort', this.externalAbort);
         this.current?.close();
         this.current = null;
+    }
+
+    /** Wait for every raw socket, including superseded attempts. The proxy's
+     * synthetic close/readyState is deliberately not evidence for this result. */
+    waitForClose(timeoutMs: number): Promise<'closed' | 'timeout' | 'unavailable'> {
+        if (!this.disposed) return Promise.resolve('unavailable');
+        return new Promise(resolve => {
+            let settled = false;
+            const timer = setTimeout(() => finish('timeout'), timeoutMs);
+            const finish = (result: 'closed' | 'timeout') => {
+                if (settled) return;
+                settled = true; clearTimeout(timer); resolve(result);
+            };
+            void Promise.all([...this.physicalAttempts].map(socket => socket.physicalClose)).then(() => finish('closed'));
+        });
     }
 }

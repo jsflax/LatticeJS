@@ -13,7 +13,7 @@ class Socket {
     _lattice_client = 0;
     listeners = new Map<string, Set<(event: any) => void>>();
     hangClose = false;
-    constructor(readonly url: string) {}
+    constructor(readonly url: string) { (control.rawSockets ??= []).push(this); }
     addEventListener(type: string, callback: (event: any) => void) {
         const values = this.listeners.get(type) ?? new Set(); values.add(callback); this.listeners.set(type, values);
     }
@@ -106,6 +106,57 @@ describe('Lattice instance lifecycle', () => {
         const db = await Lattice.open(':memory:timeouts', [Note], { sync });
         control.pending = () => 1; control.handles[0].store.socket.hangClose = true;
         expect(await db.close({ uploadTimeoutMs: 5, transportTimeoutMs: 5 })).toMatchObject({ uploads: 'timeout', transport: 'timeout', native: 'closed' });
+    });
+
+    it('admitted close waits for the physical socket while native storage and callbacks retire', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        control.admissionSupported = true;
+        const db = await Lattice.open(':memory:admitted-delay', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} }, onSyncState: value => states.push(value),
+        });
+        const raw = control.rawSockets[0] as Socket; raw.open(); raw.hangClose = true;
+        const proxy = control.handles[0].store.socket;
+        let completed = false;
+        const closing = db.close({ transportTimeoutMs: 1000 }).then(result => { completed = true; return result; });
+        expect(proxy.readyState).toBe(3); expect(raw.readyState).toBe(2);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        expect(control.releases).toBe(1); expect(completed).toBe(false);
+        raw.readyState = 3; raw.emit('close', { code: 1000, reason: '' });
+        expect(await closing).toEqual({ native: 'closed', transport: 'closed', uploads: 'not-requested', snapshot: 'not-persistent' });
+        expect(states.at(-1)?.state).toBe('open');
+        expect(raw.listeners.get('close')?.size).toBe(0);
+    });
+
+    it('admitted close reports a physical timeout even though its proxy is already CLOSED', async () => {
+        const { Lattice, Note } = await library();
+        control.admissionSupported = true;
+        const db = await Lattice.open(':memory:admitted-timeout', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} },
+        });
+        const raw = control.rawSockets[0] as Socket; raw.open(); raw.hangClose = true;
+        const closing = db.close({ transportTimeoutMs: 0 });
+        expect(control.handles[0].store.socket.readyState).toBe(3);
+        const result = await closing;
+        expect(result).toEqual({ native: 'closed', transport: 'timeout', uploads: 'not-requested', snapshot: 'not-persistent' });
+        raw.readyState = 3; raw.emit('close', { code: 1000, reason: '' });
+        expect(raw.listeners.get('close')?.size).toBe(0);
+        expect(await db.close()).toBe(result); // A later event cannot rewrite the original receipt.
+    });
+
+    it('admitted physical tracking retains legacy queued-frame purge and client detachment', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const db = await Lattice.open(':memory:admitted-legacy-cleanup', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} },
+        });
+        const handle = control.handles[0], proxy = handle.store.socket;
+        const raw = control.rawSockets[0] as Socket; raw.open(); raw.hangClose = true;
+        handle.prepareClose = undefined; // Admission capability alone is not the full lifecycle capability.
+        const closing = db.close({ transportTimeoutMs: 0 });
+        const result = await closing;
+        expect(control.purges).toBe(1); expect(proxy._lattice_client).toBe(0);
+        expect(result).toMatchObject({ native: 'unsupported', transport: 'timeout' });
+        raw.readyState = 3; raw.emit('close', { code: 1000, reason: '' });
+        expect(raw.listeners.get('close')?.size).toBe(0);
     });
 
     it('does not treat a failed pending count as zero or silently claim legacy cleanup', async () => {

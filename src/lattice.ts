@@ -1490,6 +1490,7 @@ export class Lattice {
         this.syncState.retire();
         // Revocation/close cancels admission immediately, before deferred native teardown.
         this.syncAdmission?.dispose();
+        const admittedTransport = this.syncAdmission?.waitForClose(transportMs);
         for (const stop of [...this.stopWaits]) stop();
         this.housekeepingCleanup?.();
         this.housekeepingCleanup = null;
@@ -1515,13 +1516,16 @@ export class Lattice {
                     const socket = this.db.getSyncSocket!();
                     sockets = socket ? [socket] : [];
                     const disposition = this.db.prepareClose();
-                    transport = !this.syncConfigured ? Promise.resolve('not-configured') :
-                        disposition === 'shared' ? Promise.resolve('shared') : waitForSyncSocketsClosed(sockets, transportMs);
-                } catch { transport = Promise.resolve('unavailable'); }
+                    transport = admittedTransport ?? (!this.syncConfigured ? Promise.resolve('not-configured') :
+                        disposition === 'shared' ? Promise.resolve('shared') : waitForSyncSocketsClosed(sockets, transportMs));
+                } catch { transport = admittedTransport ?? Promise.resolve('unavailable'); }
                 forgetSyncSockets(this.syncSockets);
             } else {
-                transport = this.syncConfigured ? closeSyncSockets(sockets, wasmModule, transportMs) :
-                    Promise.resolve('not-configured');
+                // Preserve native-handler detachment and queued-frame purging
+                // even when physical admission tracking supplies the receipt.
+                const legacyTransport = this.syncConfigured ? closeSyncSockets(sockets, wasmModule, transportMs) :
+                    Promise.resolve('not-configured' as const);
+                transport = admittedTransport ?? legacyTransport;
             }
             this.syncSockets = [];
             let snapshot: LatticeCloseResult['snapshot'] = 'not-persistent';

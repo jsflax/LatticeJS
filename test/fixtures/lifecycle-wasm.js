@@ -5,12 +5,12 @@ export default async function lifecycleWasm() {
     if (control.factoryError) throw new Error('factory failure');
     const module = {
         Lattice: class {
-            constructor(path, schemas, syncUrl = '', authToken = '', schemaVersion, migration) {
+            constructor(path, schemas, syncUrl = '', authToken = '', schemaVersion, migration, socketFactory = url => new WebSocket(url)) {
                 control.onConstruct?.({ path, schemas, syncUrl, authToken, schemaVersion, migration });
                 this.path = path; this.observers = new Map(); this.watchers = new Map(); this.nextId = 1;
                 let store = control.stores.get(path);
                 if (!store) {
-                    const socket = syncUrl ? new WebSocket(syncUrl) : null;
+                    const socket = syncUrl ? socketFactory(syncUrl) : null;
                     if (socket) socket._lattice_client = control.nextClient++;
                     store = { socket, holders: 0 };
                     control.stores.set(path, store);
@@ -73,6 +73,11 @@ export default async function lifecycleWasm() {
         },
         FS: { analyzePath: () => ({ exists: true }), readFile: () => control.snapshotBytes ?? new Uint8Array(0), writeFile(path, bytes) { control.restoreWrites = (control.restoreWrites ?? 0) + 1; control.onRestoreWrite?.(path, bytes); } },
         _assertRestoreAllowed(path) { return control.restoreCheck?.(path) ?? { ok: true }; },
+        syncAdmissionVersion: control.admissionSupported ? () => 1 : undefined,
+        _openAdmitted(path, schemas, syncUrl, schemaVersion, migration, socketFactory) {
+            try { return { ok: true, db: new module.Lattice(path, schemas, syncUrl, '', schemaVersion, migration, socketFactory) }; }
+            catch (error) { return { ok: false, error: error.message }; }
+        },
         _ws_purge_client() { control.purges++; },
         _migration_execute_sql(...args) { return control.migrationOperation?.('executeSql', ...args) ?? { ok: true }; },
         _migration_delete_all(...args) { return control.migrationOperation?.('deleteAll', ...args) ?? { ok: true }; },

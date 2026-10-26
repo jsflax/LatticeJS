@@ -212,7 +212,8 @@ export interface SyncStateInfo {
 export interface LatticeCloseOptions {
     /** Opt-in upload drain. Zero (the default) does not promise upload delivery. */
     uploadTimeoutMs?: number;
-    /** Wait for browser socket CLOSED, default 2000ms. */
+    /** Wait for browser socket closure, including all admitted attempts, default 2000ms.
+     * Logical cancellation of an admitted attempt does not prove transport closure. */
     transportTimeoutMs?: number;
     /** Wait for the final persistent save, default 2000ms. */
     snapshotTimeoutMs?: number;
