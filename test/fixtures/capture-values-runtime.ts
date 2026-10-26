@@ -46,7 +46,20 @@ export async function runCaptureValueCases({ module, test, newPath, register, di
         assert.equal(left.values.label, 'first'); assert.deepEqual(left.values.blob, [0, 128, 255]);
         assert.equal(captureValuesSync(native, selectors).rows.find(row => row.globalId === first.globalId)!.values.label, 'later');
         assert.ok(Object.isFrozen(left.values));
-        return { exactInt64: true, epochAndFraction: true, nullable: true, copiedBlob: true, cyclicIdentityLinks: true, detachedAfterWrite: true };
+        // A bulk native packet must preserve JSON-looking text, escapes and
+        // non-ASCII values without confusing text with its private integer tag.
+        const literal = '{"$latticeInt64":"9223372036854775807"}\n"\\\t café 😀\u0000\u2028\u2029';
+        first.label = literal;
+        first.blob = new Uint8Array(Array.from({ length: 4096 }, (_, index) => index % 256));
+        const encoded = captureValuesSync(native, selectors).rows.find(row => row.globalId === first.globalId)!;
+        const encodedBlob = encoded.values.blob;
+        assert.ok(Array.isArray(encodedBlob));
+        assert.equal(encoded.values.label, literal);
+        assert.deepEqual(encodedBlob, Array.from(first.blob));
+        assert.equal(encoded.values.seq, -(1n << 63n));
+        first.label = 'after packet'; first.blob = new Uint8Array();
+        assert.equal(encoded.values.label, literal); assert.equal(encodedBlob.length, 4096);
+        return { exactInt64: true, epochAndFraction: true, nullable: true, copiedBlob: true, cyclicIdentityLinks: true, detachedAfterWrite: true, escapedPacketTextAndBlob: true };
     }));
     await test('detached capture refuses outer transactions and preflight failures then allows ordinary writes', () => fixture(async ({ native, add }) => {
         const row = await add('initial', 7n, 0);

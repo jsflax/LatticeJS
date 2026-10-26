@@ -25,6 +25,27 @@
 using namespace emscripten;
 using namespace lattice;
 
+// Decode one detached packet instead of crossing Embind for every row/cell.
+// Integer tags are private to this packet; public capture values remain BigInt.
+// Catch JS failures as data so the C++ detached buffers unwind normally.
+EM_JS(EM_VAL, lattice_decode_capture_packet, (const char* text), {
+    try {
+        const result = JSON.parse(UTF8ToString(text));
+        for (const row of result.rows) {
+            for (const key of Object.keys(row.values)) {
+                const value = row.values[key];
+                if (value !== null && typeof value === 'object' &&
+                    Object.prototype.hasOwnProperty.call(value, '$latticeInt64')) {
+                    row.values[key] = BigInt(value['$latticeInt64']);
+                }
+            }
+        }
+        return Emval.toHandle({ok: true, value: result});
+    } catch (_) {
+        return Emval.toHandle({ok: false});
+    }
+});
+
 // Emscripten's JS exception mode only unwinds C++ exceptions. Catch a user JS
 // error here and return it as data so the caller can throw *inside* C++; Core's
 // transaction and migration-context guards must run on a refused migration.
@@ -1753,25 +1774,25 @@ public:
         }
         if (!ref_) throw std::runtime_error("Capture requires an open database");
         const auto detached = lattice_js_capture::capture_native(swift_lattice_ref::shared_for_lattice(ref_->get()), selectors);
-        val rows = val::array();
+        nlohmann::json rows = nlohmann::json::array();
         for (const auto& row : detached.rows) {
-            val values = val::object();
+            nlohmann::json values = nlohmann::json::object();
             for (const auto& [key, cell] : row.values) {
-                const auto copied = std::visit([](const auto& value) -> val {
+                values[key] = std::visit([](const auto& value) -> nlohmann::json {
                     using T = std::decay_t<decltype(value)>;
-                    if constexpr (std::is_same_v<T, std::nullptr_t>) return val::null();
+                    if constexpr (std::is_same_v<T, int64_t>)
+                        return {{"$latticeInt64", std::to_string(value)}};
                     else if constexpr (std::is_same_v<T, lattice_js_capture::link>) {
-                        val result = val::object(); result.set("table", value.table); result.set("globalId", value.global_id); return result;
-                    } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
-                        val result = val::array(); for (const auto byte : value) result.call<void>("push", byte); return result;
-                    } else return val(value);
+                        return {{"table", value.table}, {"globalId", value.global_id}};
+                    } else return value;
                 }, cell);
-                values.set(key, copied);
             }
-            val copied = val::object(); copied.set("table", row.table); copied.set("globalId", row.global_id); copied.set("values", values);
-            rows.call<void>("push", copied);
+            rows.push_back({{"table", row.table}, {"globalId", row.global_id}, {"values", std::move(values)}});
         }
-        val result = val::object(); result.set("formatVersion", 1); result.set("rows", rows); return result;
+        const auto packet = nlohmann::json({{"formatVersion", 1}, {"rows", std::move(rows)}}).dump();
+        const auto decoded = val::take_ownership(lattice_decode_capture_packet(packet.c_str()));
+        if (!decoded["ok"].as<bool>()) throw std::runtime_error("Detached capture packet decode failed");
+        return decoded["value"];
     }
 
     // Explicit-model callers hydrate managed rows by identity. They must not
