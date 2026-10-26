@@ -59,6 +59,28 @@ export async function runCaptureValueCases({ module, test, newPath, register, di
         assert.equal(encoded.values.seq, -(1n << 63n));
         first.label = 'after packet'; first.blob = new Uint8Array();
         assert.equal(encoded.values.label, literal); assert.equal(encodedBlob.length, 4096);
+        // Streaming packet containers must keep the same scalar codec, even
+        // across empty strings/blobs, all JSON control bytes and Int64 values
+        // that cannot pass through a JavaScript Number without rounding.
+        for (const sample of [
+            { text: '', seq: 0n, bytes: [] },
+            { text: Array.from({ length: 32 }, (_, i) => String.fromCharCode(i)).join(''), seq: -9007199254740993n, bytes: Array.from({ length: 256 }, (_, i) => i) },
+            { text: '\uD7FF\uE000\u{10FFFF}', seq: 9007199254740993n, bytes: [255, 0, 128] },
+        ]) {
+            first.label = sample.text; first.seq = sample.seq; first.blob = new Uint8Array(sample.bytes);
+            const values = captureValuesSync(native, selectors).rows.find(row => row.globalId === first.globalId)!.values;
+            assert.deepEqual({ label: values.label, seq: values.seq, blob: values.blob, optional: values.optional, parent: values.parent },
+                { label: sample.text, seq: sample.seq, blob: sample.bytes, optional: null, parent: { table, globalId: second.globalId } });
+        }
+        for (const real of [-0, Number.MIN_VALUE, -Number.MIN_VALUE, Number.MAX_VALUE, -Number.MAX_VALUE, 1.2345678901234567, 1e-30, 1e30]) {
+            first.at = real;
+            // Compare with the existing public getter's actual SQLite value:
+            // storage may normalize -0; the packet must not introduce another
+            // numeric conversion, including for subnormal and finite extremes.
+            const stored = first.at;
+            const copied = captureValuesSync(native, selectors).rows.find(row => row.globalId === first.globalId)!.values.at;
+            assert.ok(Object.is(copied, stored), 'Packet floats must equal the existing getter, including signed zero and subnormals');
+        }
         return { exactInt64: true, epochAndFraction: true, nullable: true, copiedBlob: true, cyclicIdentityLinks: true, detachedAfterWrite: true, escapedPacketTextAndBlob: true };
     }));
     await test('detached capture refuses outer transactions and preflight failures then allows ordinary writes', () => fixture(async ({ native, add }) => {

@@ -1774,22 +1774,54 @@ public:
         }
         if (!ref_) throw std::runtime_error("Capture requires an open database");
         const auto detached = lattice_js_capture::capture_native(swift_lattice_ref::shared_for_lattice(ref_->get()), selectors);
-        nlohmann::json rows = nlohmann::json::array();
+        // Stream only the closed packet containers. Reuse the pinned nlohmann
+        // 3.11.3 serializer with exactly json::dump()'s compact defaults; it
+        // still owns UTF-8 validation/escaping and floating-point formatting.
+        // A temporary scalar is released after each write, so there is no
+        // second row/value/blob JSON tree beside the admitted detached copy.
+        std::string packet = "{\"formatVersion\":1,\"rows\":[";
+        nlohmann::detail::serializer<nlohmann::json> writer(
+            nlohmann::detail::output_adapter<char>(packet), ' ',
+            nlohmann::detail::error_handler_t::strict);
+        auto scalar = [&](const auto& value) {
+            writer.dump(nlohmann::json(value), false, false, 0);
+        };
+        bool first_row = true;
         for (const auto& row : detached.rows) {
-            nlohmann::json values = nlohmann::json::object();
+            if (!first_row) packet += ',';
+            first_row = false;
+            // Preserve the prior JSON object's lexicographic key order.
+            packet += "{\"globalId\":"; scalar(row.global_id);
+            packet += ",\"table\":"; scalar(row.table);
+            packet += ",\"values\":{";
+            bool first_cell = true;
             for (const auto& [key, cell] : row.values) {
-                values[key] = std::visit([](const auto& value) -> nlohmann::json {
+                if (!first_cell) packet += ',';
+                first_cell = false;
+                scalar(key); packet += ':';
+                std::visit([&](const auto& value) {
                     using T = std::decay_t<decltype(value)>;
-                    if constexpr (std::is_same_v<T, int64_t>)
-                        return {{"$latticeInt64", std::to_string(value)}};
-                    else if constexpr (std::is_same_v<T, lattice_js_capture::link>) {
-                        return {{"table", value.table}, {"globalId", value.global_id}};
-                    } else return value;
+                    if constexpr (std::is_same_v<T, int64_t>) {
+                        packet += "{\"$latticeInt64\":";
+                        scalar(std::to_string(value)); packet += '}';
+                    } else if constexpr (std::is_same_v<T, lattice_js_capture::link>) {
+                        packet += "{\"globalId\":"; scalar(value.global_id);
+                        packet += ",\"table\":"; scalar(value.table); packet += '}';
+                    } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+                        packet += '[';
+                        bool first_byte = true;
+                        for (const auto byte : value) {
+                            if (!first_byte) packet += ',';
+                            first_byte = false;
+                            scalar(byte);
+                        }
+                        packet += ']';
+                    } else scalar(value);
                 }, cell);
             }
-            rows.push_back({{"table", row.table}, {"globalId", row.global_id}, {"values", std::move(values)}});
+            packet += "}}";
         }
-        const auto packet = nlohmann::json({{"formatVersion", 1}, {"rows", std::move(rows)}}).dump();
+        packet += "]}";
         const auto decoded = val::take_ownership(lattice_decode_capture_packet(packet.c_str()));
         if (!decoded["ok"].as<bool>()) throw std::runtime_error("Detached capture packet decode failed");
         return decoded["value"];
