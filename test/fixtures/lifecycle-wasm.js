@@ -42,7 +42,7 @@ export default async function lifecycleWasm() {
                 this.store.socket = socket;
                 // The public code also adopts the exact native socket before
                 // relying on the real scheduler's later watcher delivery.
-                for (const callback of this.watchers.values()) callback(socket);
+                if (!control.deferReconnectWatch) for (const callback of this.watchers.values()) callback(socket);
             }
             prepareClose() {
                 this.watchers.clear(); this.observers.clear();

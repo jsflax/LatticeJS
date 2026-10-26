@@ -506,6 +506,66 @@ describe('explicit same-store reconnect', () => {
         await db.close();
     });
 
+    it('retires late raw open delivery immediately on timeout before deferred disconnect', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        const db = await Lattice.open(':memory:late-open-timeout', [Note], { sync, onSyncState: state => states.push(state) });
+        control.rawSockets[0].open();
+        vi.useFakeTimers();
+        const failed = db.reconnectSync({ timeoutMs: 30 }).catch(error => error);
+        await vi.advanceTimersByTimeAsync(5);
+        const raw = control.rawSockets[1] as Socket; raw.hangClose = true;
+        expect(states.at(-1)?.state).toBe('connecting');
+        await vi.advanceTimersByTimeAsync(25);
+        expect(states.at(-1)).toMatchObject({ state: 'closed', connectionGeneration: 2 });
+        expect(raw.readyState).toBe(0); // Deferred native disconnect has not run yet.
+        expect(raw.listeners.get('open')?.size ?? 0).toBe(0);
+        const retired = states.length;
+        raw.open();
+        expect(states).toHaveLength(retired);
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await failed).message).toBe('Sync reconnect timed out.');
+        expect(raw.readyState).toBe(2);
+        vi.useRealTimers();
+        raw.readyState = 3; raw.emit('close');
+        const retry = db.reconnectSync({ timeoutMs: 1000 });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(3));
+        control.rawSockets[2].open();
+        expect((await retry).connectionGeneration).toBe(3);
+        await db.close();
+    });
+
+    it('does not let a queued native watcher re-adopt a failed unobserved attempt', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        const db = await Lattice.open(':memory:late-native-watch', [Note], { sync, onSyncState: state => states.push(state) });
+        const native = control.handles[0], watch = [...native.watchers.values()][0] as (socket: Socket) => void;
+        const get = native.getSyncSocket.bind(native), disconnect = native.disconnectSync.bind(native);
+        let allowGetter = false;
+        native.getSyncSocket = () => {
+            if (control.connects === 1 && !allowGetter) throw new Error('post-connect getter failed');
+            return get();
+        };
+        native.disconnectSync = () => {
+            if (control.connects === 1) native.store.socket.hangClose = true;
+            disconnect();
+        };
+        control.deferReconnectWatch = true;
+        control.rawSockets[0].open();
+        await expect(db.reconnectSync({ timeoutMs: 1000 })).rejects.toThrow('post-connect getter failed');
+        const raw = control.rawSockets[1] as Socket, retired = states.length;
+        raw.open(); watch(raw); raw.emit('open');
+        expect(states).toHaveLength(retired);
+        expect(states.at(-1)?.state).toBe('closed');
+        expect(raw.listeners.get('open')?.size ?? 0).toBe(0);
+        raw.readyState = 3; raw.emit('close');
+        allowGetter = true; control.deferReconnectWatch = false;
+        const retry = db.reconnectSync({ timeoutMs: 1000 });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(3));
+        control.rawSockets[2].open();
+        expect((await retry).state).toBe('open');
+        expect(control.handles).toHaveLength(1); expect(control.connects).toBe(2);
+        await db.close();
+    });
+
     it('does not report open success if an earlier public state listener closes the owner', async () => {
         const { Lattice, Note } = await library(); const db = await Lattice.open(':memory:reentrant-reconnect', [Note], { sync });
         let closed: ReturnType<typeof db.close> | undefined;

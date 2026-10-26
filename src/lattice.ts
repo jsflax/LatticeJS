@@ -136,6 +136,7 @@ export class Lattice {
     private readonly stopWaits = new Set<() => void>();
     private closePromise: Promise<LatticeCloseResult> | null = null;
     private reconnectPromise: Promise<SyncStateInfo> | null = null;
+    private reconnectStateSuppressed = false;
     private nativeCleanupResult: LatticeCloseResult['native'] | null = null;
     private readonly observerDisposers = new Set<() => void>();
 
@@ -236,7 +237,7 @@ export class Lattice {
         forgetSyncSockets(this.syncSockets);
         this.syncSockets = socket ? [socket] : [];
         claimSyncSockets(this.syncSockets);
-        this.syncState.bind(socket);
+        if (!this.reconnectStateSuppressed) this.syncState.bind(socket);
     }
 
     /**
@@ -1172,7 +1173,7 @@ export class Lattice {
                 try { this.db.disconnectSync!(); }
                 catch (error) { this.syncState.fail(); throw error; }
                 this.adoptSyncSocket(oldSocket);
-                this.syncState.bind(oldSocket); // Publish stale even if the transport detached its native handlers.
+                if (!this.reconnectStateSuppressed) this.syncState.bind(oldSocket); // Publish stale even if the transport detached its native handlers.
                 const generation = this.syncState.state.connectionGeneration;
                 const closed = this.syncAdmission ?
                     await this.syncAdmission.waitForClose(remaining(), cancellation.signal) :
@@ -1202,6 +1203,7 @@ export class Lattice {
                 });
                 try {
                     remaining(); attemptedConnect = true;
+                    this.reconnectStateSuppressed = false;
                     this.db.connectSync!(); // Recheck exclusive ownership after the asynchronous close barrier.
                     remaining();
                     const socket = this.db.getSyncSocket!();
@@ -1214,6 +1216,11 @@ export class Lattice {
                 // Cancel admission after an open timeout/refusal. Leave physical
                 // tracking intact; no later call may skip its close barrier.
                 if (attemptedConnect && !this.closing) {
+                    // Retire failed state before deferred native cleanup. A queued
+                    // watcher may still update leases, but cannot re-adopt this
+                    // attempt until an explicit retry passes the close barrier.
+                    this.reconnectStateSuppressed = true;
+                    this.syncState.bind(null);
                     await new Promise<void>(resolve => setTimeout(resolve, 0));
                     if (!this.closing) {
                         try { this.db.disconnectSync!(); } catch { /* The failure remains explicit. */ }
