@@ -66,3 +66,45 @@ storage and complete Swift↔Wasm file roundtrip are separate integration gates.
 The upstream branch is unpublished; no native application pin or owner store
 was changed. This receipt is not a cross-tab consistency, wall-clock latency or
 release qualification claim.
+
+## 2026-10-25: bulk export candidate and current limits
+
+The later candidate at LatticeJS
+`7550597bdcb720c5be73bba22482e0f1d8d8a147`, paired with Core
+`db81e0ced019803ffa5fd5c7fc5ee80d17b8aac9`, passes a fresh Release build and
+all 45 actual Wasm/SQLite runtime cases. This includes the original 39, three
+scalar/link-query regressions, and three aggregate-admission regressions. The
+original primitive-codec case additionally checks escaped and tag-looking text,
+Unicode, embedded NUL and line separators, and a detached 4 KiB blob. All final
+native resource counters and retained handles are zero, with no asynchronous
+errors or fatal logs. The paired Core passes 74 selected native cases, including
+the formerly failing mixed model registry and geographic-list schema checks.
+
+Capture now reuses snapshot-local hydrated values and validated link identities,
+aggregates physical-cell preflight before hydration, and crosses the Wasm
+boundary once with a detached JSON packet. Private integer tags are decoded to
+BigInt before the existing public validation/copy boundary; there is no public
+codec or result-shape change. Selected scalar statement counts stay at 7 for
+one field, five fields, and 64 rows; repeated link targets stay at 22 statements.
+These are statement-count checks, not a latency guarantee.
+
+Qualification receipt: `/Users/jason/localdev/hud-scratch/hud-capture-bulk-export-v1/qualification/qualification.json`.
+Candidate artifact SHA256:
+
+- `lattice.js`: `f9381842b21fa91ebb8c3792bfff33663e0469b15026db33e3bde984714c6410`
+- `lattice.wasm`: `90b91786aa02f6ab9333c11cc013ea35bec4293bd41a174851e0d04b6807b5d3`
+
+The payload limits above are unchanged. The temporary JSON representation adds
+keys, escaping, integer tags and numeric blob arrays, so the 8 MiB logical payload
+limit is not an encoded JSON size or peak-memory/RSS bound. Capture still runs on
+the main thread; this candidate adds no worker or persistent cross-call cache.
+
+The separate local Chrome/macOS 652-node HUD consumer, with its renderer admission
+optimization, passed all seven behavior/lifecycle checks but missed performance
+budgets: mount 257.8 ms against 500 ms, update p95 178 ms against 100 ms, burst-frame
+p95 150 ms against 34 ms, and scroll-frame p95 16.8 ms against 34 ms. All nine
+owned children joined and the terminal process census was clear. The ordinary
+mount/update budgets were measured without profiling; the input profile is a
+separate diagnostic. This does not qualify end-to-end latency, physical devices,
+remote sync, or a release. Receipt:
+`/Users/jason/localdev/hud-scratch/hud-live-performance-v1/owned-bulk45-renderer-v1/evidence/browser/receipt.json`.
