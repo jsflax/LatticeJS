@@ -143,9 +143,9 @@ inline snapshot capture_native(const std::shared_ptr<lattice::swift_lattice>& ow
         auto& db = owner->db(); read_scope scope(db);
         budget preflight, output;
         size_t total_rows = 0;
-        // Existing Core objects/get_object hydrate flat rows. Preflight every
-        // actual physical cell (including unselected/stale columns) before
-        // those methods can allocate payloads. No layout is invented here.
+        // Preflight every actual physical cell (including unselected/stale
+        // columns) before materializing selected payloads. No layout is
+        // invented here, and the legacy materialization fallback is bounded too.
         for (auto& plan : plans) {
             const auto info = db.query("PRAGMA table_info(" + quote_identifier(plan.selection.table) + ")");
             require(!info.empty() && info.size() <= 512, "Capture physical schema bound exceeded");
@@ -255,6 +255,75 @@ inline snapshot capture_native(const std::shared_ptr<lattice::swift_lattice>& ow
         }
         result.rows.reserve(total_rows);
         for (const auto& plan : plans) {
+            // Capture needs detached scalar values, not managed objects with
+            // per-row copies of the schema, source map and dynamic wrapper.
+            // Keep the legacy path for renamed columns or affinity coercion:
+            // its getter behavior is not redefined by this optimization.
+            bool direct = true;
+            std::string sql = "SELECT globalId";
+            for (const auto& property : plan.properties) {
+                if (property.kind != lattice::property_kind::primitive) continue;
+                if (!property.column_name.empty() && property.column_name != property.name) direct = false;
+                sql += "," + quote_identifier(property.name);
+            }
+            std::vector<lattice::database::row_t> rows;
+            if (direct) {
+                rows = db.query(sql + " FROM " + quote_identifier(plan.selection.table) +
+                    " ORDER BY id LIMIT " + std::to_string(plan.selection.max_rows + 1));
+                require(rows.size() == plan.count, "Capture row set changed during materialization");
+                for (const auto& raw : rows) for (const auto& property : plan.properties) {
+                    if (property.kind != lattice::property_kind::primitive) continue;
+                    const auto found = raw.find(property.name);
+                    if (found == raw.end()) { direct = false; continue; }
+                    const auto& cell = found->second;
+                    if (std::holds_alternative<std::nullptr_t>(cell)) continue;
+                    const bool exact =
+                        (property.type == lattice::column_type::integer && std::holds_alternative<int64_t>(cell)) ||
+                        (property.type == lattice::column_type::real && std::holds_alternative<double>(cell)) ||
+                        (property.type == lattice::column_type::text && std::holds_alternative<std::string>(cell)) ||
+                        (property.type == lattice::column_type::blob && std::holds_alternative<std::vector<uint8_t>>(cell));
+                    if (!exact) direct = false;
+                }
+            }
+            if (direct) {
+                for (auto& raw : rows) {
+                    row copied{plan.selection.table, text(raw, "globalId"), {}};
+                    require(!copied.global_id.empty(), "Capture requires a global identity"); output.string(copied.table); output.string(copied.global_id);
+                    for (const auto& property : plan.properties) {
+                        if (property.kind == lattice::property_kind::link) {
+                            const auto& links = captured_links.at(plan.selection.table + ":" + property.name);
+                            const auto found = links.find(folded(copied.global_id));
+                            if (found == links.end()) copied.values.emplace(property.name, nullptr);
+                            else {
+                                const auto& target = found->second;
+                                require(target.table == property.target_table && !target.global_id.empty(), "Capture received an invalid linked identity");
+                                output.string(target.table); output.string(target.global_id); copied.values.emplace(property.name, target);
+                            }
+                            continue;
+                        }
+                        auto& cell = raw.at(property.name);
+                        if (std::holds_alternative<std::nullptr_t>(cell)) {
+                            require(property.nullable, "Capture encountered a required NULL"); copied.values.emplace(property.name, nullptr);
+                        } else {
+                            switch (property.type) {
+                            case lattice::column_type::integer: copied.values.emplace(property.name, std::get<int64_t>(cell)); break;
+                            case lattice::column_type::real: {
+                                const auto number = std::get<double>(cell); require(std::isfinite(number), "Capture REAL must be finite"); copied.values.emplace(property.name, number); break;
+                            }
+                            case lattice::column_type::text: {
+                                auto& string = std::get<std::string>(cell); output.string(string); copied.values.emplace(property.name, std::move(string)); break;
+                            }
+                            case lattice::column_type::blob: {
+                                auto& bytes = std::get<std::vector<uint8_t>>(cell); output.cell(bytes.size()); copied.values.emplace(property.name, std::move(bytes)); break;
+                            }
+                            }
+                        }
+                    }
+                    result.rows.push_back(std::move(copied));
+                }
+                continue;
+            }
+            rows.clear();
             auto objects = owner->objects(plan.selection.table, std::nullopt, std::string("id ASC"), static_cast<int64_t>(plan.selection.max_rows + 1));
             require(lattice::last_bridge_error().empty(), "Capture Core query failed");
             require(objects.size() == plan.count, "Capture row set changed during materialization");

@@ -142,10 +142,26 @@ export async function runCaptureValueCases({ module, test, newPath, register, di
         const properties = ['label', 'seq', 'at', 'optional', 'blob'];
         const wide = measure(properties);
         assert.equal(wide.statements, narrow.statements, 'Selecting additional hydrated scalar cells must not issue per-cell SQL');
-        for (let i = 1; i < 64; ++i) await add(`row-${i}`, BigInt(i), i + 0.25);
+        const expected = [{ table, globalId: first.globalId, values: {
+            label: 'first', seq: -(1n << 63n), at: -0.125, optional: null, blob: [0, 128, 255],
+        } }];
+        for (let i = 1; i < 64; ++i) {
+            const row = await add(`row-${i}`, BigInt(i), i + 0.25);
+            expected.push({ table, globalId: row.globalId, values: {
+                label: `row-${i}`, seq: BigInt(i), at: i + 0.25, optional: null, blob: [0, 128, 255],
+            } });
+        }
         const many = measure(properties);
         assert.equal(many.captured.rows.length, 64);
         assert.equal(many.statements, wide.statements, 'Additional rows must not issue per-row scalar SELECTs');
+        assert.deepEqual(many.captured.rows.map(row => ({ ...row, values: { ...row.values } })), expected,
+            'Selected scalar values must remain exact and rows must retain physical insertion order');
+        const reversed = measure([...properties].reverse());
+        assert.deepEqual(reversed.captured, many.captured, 'Selector field order must not change values or row order');
+        assert.equal(reversed.statements, many.statements, 'Reordered scalar selection must not add SQL');
+        assert.throws(() => (db as Lattice).captureValuesSync([{ table, properties, maxRows: 63 }]), /row bound/,
+            'Direct selected reads must refuse excess rows rather than return a truncated prefix');
+        assert.deepEqual(measure(properties).captured, many.captured, 'A refused capture must leave exact prior values readable');
         const saved = many.captured.rows.find(row => row.globalId === first.globalId)!;
         assert.deepEqual({ ...saved.values }, { label: 'first', seq: -(1n << 63n), at: -0.125, optional: null, blob: [0, 128, 255] });
         first.optional = 'present'; first.seq = (1n << 63n) - 1n; first.blob = new Uint8Array();
@@ -154,7 +170,7 @@ export async function runCaptureValueCases({ module, test, newPath, register, di
         first.optional = null;
         assert.equal(measure(properties).captured.rows.find(row => row.globalId === first.globalId)!.values.optional, null);
         assert.equal(saved.values.optional, null); assert.equal(saved.values.seq, -(1n << 63n)); assert.deepEqual(saved.values.blob, [0, 128, 255]);
-        return { rows: 64, selectedPrimitiveFields: 5, narrowStatements: String(narrow.statements), wideStatements: String(wide.statements), manyStatements: String(many.statements), freshNullAndBlob: true };
+        return { rows: 64, selectedPrimitiveFields: 5, narrowStatements: String(narrow.statements), wideStatements: String(wide.statements), manyStatements: String(many.statements), freshNullAndBlob: true, exactScalarProjectionAndOrder: true, rowBoundRefusalAndRecovery: true };
     }));
     await test('detached cross-table links reuse identities with nullable repeated targets and no per-parent SQL', async () => {
         const { CaptureOwner: Owner, CaptureTarget: Target } = defineModels({ formatVersion: 1, models: [
