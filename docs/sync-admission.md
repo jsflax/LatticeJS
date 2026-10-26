@@ -107,10 +107,33 @@ closure is observed. Closing the database or aborting its configured admission
 signal cancels recovery; a revoked admission owner cannot reconnect. Host policy
 still decides whether the grant remains valid, and must keep stale actions gated.
 
-These additions are source candidates with focused lifecycle regressions and an
-extended existing browser admission fixture. Fresh Wasm compilation and real
-browser qualification remain pending; the historical receipts below do not
-qualify the reconnect API.
+A failed attempted connection retires its state listeners before deferred native
+disconnect. Late open events and queued native socket notifications cannot restore
+its connected claim. Physical socket tracking remains active, and a later explicit
+retry can admit state again only after the old transport has closed.
+
+On 2026-10-26, the reconnect candidate passed 334 JavaScript unit tests (six
+existing skips), public TypeScript checking, and all five real Chromium admission
+scenarios. The fresh Release Wasm passed the unchanged 45-case lifecycle/capture
+suite. The final JavaScript late-open correction reused those exact compiled bytes
+and passed a fresh five-scenario browser run. The unchanged Core revision
+`db81e0ced019803ffa5fd5c7fc5ee80d17b8aac9` retains its prior 74-case native evidence;
+Core was not rebuilt for this reconnect qualification.
+
+The browser observed five fresh upgrades, all five peer close events, at most one
+simultaneously OPEN server peer, and zero remaining native resources, external
+requests, browser errors, credential query parameters, or Authorization headers.
+Delayed raw-close ordering and queued-watcher failure races are covered by focused
+JavaScript lifecycle tests. HTTP loopback evidence does not qualify production
+TLS, host authorization policy, or HUD/Worker adoption of this API.
+
+Receipts are retained under
+`/Users/jason/localdev/hud-scratch/hud-sync-reconnect-v1/`: `qualification/` records
+the fresh compiled runtime and original browser run; `checks-v3/` and
+`qualification-js-v1/` record the final JavaScript successor. The qualified loader
+SHA256 is `bc8065f36ef3ea3c67489a6991ff758feab5c9c4c8c728336ce7852ee2021079`;
+the Wasm SHA256 is `dcfe1832261e2073c3afabcf9699906512d0ea731f244277bbcc5d01abd0405d`.
+These are local candidate results, not a release or upstream publication.
 
 ## Qualification
 
