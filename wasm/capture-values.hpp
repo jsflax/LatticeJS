@@ -65,6 +65,14 @@ struct budget {
         require(amount <= max_cell_bytes, "Capture cell byte bound exceeded");
         require(amount <= max_bytes - bytes, "Capture aggregate byte bound exceeded"); bytes += amount;
     }
+    // Aggregate lengths remain signed 64-bit until the bounded total is proven
+    // safe to narrow on Wasm32. A column sum is not an individual cell.
+    void physical_column(int64_t maximum, int64_t total) {
+        require(maximum >= 0 && total >= maximum, "Invalid capture cell length");
+        require(maximum <= static_cast<int64_t>(max_cell_bytes), "Capture cell byte bound exceeded");
+        require(total <= static_cast<int64_t>(max_bytes - bytes), "Capture aggregate byte bound exceeded");
+        bytes += static_cast<size_t>(total);
+    }
     void string(const std::string& input) { cell(input.size()); require(valid_utf8(input), "Capture requires valid UTF-8 text"); }
     void cells(size_t amount) { require(amount <= max_work - work, "Capture work bound exceeded"); work += amount; }
 };
@@ -153,35 +161,37 @@ inline snapshot capture_native(const std::shared_ptr<lattice::swift_lattice>& ow
             require(plan.count <= plan.selection.max_rows && plan.count <= max_rows - total_rows, "Capture row bound exceeded");
             total_rows += plan.count;
             preflight.cells(plan.count * columns.size()); output.cells(plan.count * plan.properties.size());
-            std::string sql = "SELECT ";
+            // SQLite scans the same bounded cells, but returns one aggregate
+            // row instead of allocating a native result entry for every cell.
+            std::string sql = "SELECT COUNT(*) AS row_count";
             for (size_t i = 0; i < columns.size(); ++i) {
-                if (i) sql += ",";
-                sql += "COALESCE(length(CAST(" + quote_identifier(columns[i]) + " AS BLOB)),0) AS " + quote_identifier("n" + std::to_string(i));
+                const auto length = "COALESCE(length(CAST(" + quote_identifier(columns[i]) + " AS BLOB)),0)";
+                sql += ",COALESCE(MAX(" + length + "),0) AS " + quote_identifier("m" + std::to_string(i));
+                sql += ",COALESCE(SUM(" + length + "),0) AS " + quote_identifier("n" + std::to_string(i));
             }
-            // Validate selected stored scalar types before getters can coerce
-            // malformed data into plausible zero/empty defaults.
+            // CASE/ELSE checks every selected scalar, including required NULLs;
+            // nullable NULL is admitted without permitting other stored types.
             for (size_t i = 0; i < plan.properties.size(); ++i) {
                 const auto& property = plan.properties[i];
-                if (property.kind == lattice::property_kind::primitive)
-                    sql += ",typeof(" + quote_identifier(property.column_name.empty() ? property.name : property.column_name) + ") AS " + quote_identifier("t" + std::to_string(i));
+                if (property.kind != lattice::property_kind::primitive) continue;
+                const auto stored = "typeof(" + quote_identifier(property.column_name.empty() ? property.name : property.column_name) + ")";
+                std::string matches = "0";
+                if (property.type == lattice::column_type::integer) matches = stored + "='integer'";
+                else if (property.type == lattice::column_type::real) matches = stored + " IN ('real','integer')";
+                else if (property.type == lattice::column_type::text) matches = stored + "='text'";
+                else if (property.type == lattice::column_type::blob) matches = stored + "='blob'";
+                if (property.nullable) matches = "(" + matches + " OR " + stored + "='null')";
+                sql += ",COALESCE(SUM(CASE WHEN " + matches + " THEN 0 ELSE 1 END),0) AS " + quote_identifier("t" + std::to_string(i));
             }
-            sql += " FROM " + quote_identifier(plan.selection.table) + " ORDER BY id LIMIT " + std::to_string(plan.selection.max_rows + 1);
+            sql += " FROM (SELECT * FROM " + quote_identifier(plan.selection.table) + " ORDER BY id LIMIT " + std::to_string(plan.selection.max_rows + 1) + ")";
             const auto lengths = db.query(sql);
-            require(lengths.size() == plan.count, "Capture row set changed during preflight");
-            for (const auto& row : lengths) {
-                for (size_t i = 0; i < columns.size(); ++i) {
-                    const auto bytes = integer(row, "n" + std::to_string(i)); require(bytes >= 0, "Invalid capture cell length"); preflight.cell(static_cast<size_t>(bytes));
-                }
-                for (size_t i = 0; i < plan.properties.size(); ++i) {
-                    const auto& property = plan.properties[i]; if (property.kind != lattice::property_kind::primitive) continue;
-                    const auto stored = text(row, "t" + std::to_string(i));
-                    const bool matches = (stored == "null" && property.nullable) ||
-                        (property.type == lattice::column_type::integer && stored == "integer") ||
-                        (property.type == lattice::column_type::real && (stored == "real" || stored == "integer")) ||
-                        (property.type == lattice::column_type::text && stored == "text") ||
-                        (property.type == lattice::column_type::blob && stored == "blob");
-                    require(matches, "Capture stored scalar type does not match its schema");
-                }
+            require(lengths.size() == 1 && integer(lengths.front(), "row_count") == static_cast<int64_t>(plan.count), "Capture row set changed during preflight");
+            const auto& totals = lengths.front();
+            for (size_t i = 0; i < columns.size(); ++i)
+                preflight.physical_column(integer(totals, "m" + std::to_string(i)), integer(totals, "n" + std::to_string(i)));
+            for (size_t i = 0; i < plan.properties.size(); ++i) {
+                if (plan.properties[i].kind == lattice::property_kind::primitive)
+                    require(integer(totals, "t" + std::to_string(i)) == 0, "Capture stored scalar type does not match its schema");
             }
         }
         // Validate installed junction shape before detached identity copy;

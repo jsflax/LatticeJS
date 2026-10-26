@@ -210,4 +210,84 @@ export async function runCaptureValueCases({ module, test, newPath, register, di
         assert.equal(captured.rows.find(row => row.globalId === secondID)!.values.parent, null);
         return { canonicalTargetUUID: true, caseInsensitiveJunction: true, absentLinkIsNull: true };
     }));
+    await test('detached aggregate preflight admits empty wide schemas and exact physical cell limits', async () => {
+        const wideTable = 'CaptureWide';
+        const names = Array.from({ length: 63 }, (_, i) => `value${i}`);
+        const { CaptureWide: Wide } = defineModels({ formatVersion: 1, models: [{
+            tableName: wideTable,
+            properties: names.map(name => ({ name, kind: 'primitive' as const, type: 'string' as const, nullable: true })),
+        }] });
+        const native = new module.Lattice(newPath('capture-wide-aggregate'), buildSchemas([Wide])); register(native);
+        const db = Object.assign(Object.create(Lattice.prototype), { db: native }) as Lattice;
+        let wrapper: any;
+        setWasmModule(module);
+        try {
+            const initialColumns = native.debugQueryCount('PRAGMA table_info(CaptureWide)');
+            assert.equal(initialColumns, 65, 'Real model has 63 scalars and the two identity columns');
+            native.beginWrite();
+            try {
+                for (let i = initialColumns; i < 512; ++i)
+                    assert.equal(native.debugQueryCount(`ALTER TABLE CaptureWide ADD COLUMN stale${i} BLOB`), 0);
+            } finally { native.commitWrite(); }
+            assert.equal(native.debugQueryCount('PRAGMA table_info(CaptureWide)'), 512);
+            // Core audit triggers accept 63 scalar fields under SQLite's 127-argument
+            // limit. MAX/SUM for 512 physical columns plus those 63 type checks
+            // exercises 1,088 aggregate result columns, even on an empty table.
+            assert.deepEqual(db.captureValuesSync([{ table: wideTable, properties: names }]).rows, []);
+            const row = new Wide(Object.fromEntries(names.map(name => [name, null])));
+            wrapper = (row as any)[DYNAMIC_OBJECT]; await db.add(row);
+            row.value0 = 'x'.repeat(CAPTURE_LIMITS.cellBytes);
+            row.value1 = 'after-empty';
+            const selection = [{ table: wideTable, properties: ['value1'] }];
+            assert.equal(db.captureValuesSync(selection).rows[0]!.values.value1, 'after-empty');
+            row.value0 += 'x';
+            assert.throws(() => db.captureValuesSync(selection), /cell byte bound/);
+            row.value0 = null; row.value1 = 'after-cell-refusal';
+            assert.equal(db.captureValuesSync(selection).rows[0]!.values.value1, 'after-cell-refusal');
+            return { physicalColumns: 512, selectedProperties: 63, aggregateResultColumns: 1088, empty: true, exactCellAdmitted: true, unselectedOversizeRefused: true, postFailureWrite: true };
+        } finally { setWasmModule(null); wrapper?.delete(); dispose(native); }
+    });
+    await test('detached aggregate preflight enforces one byte budget across selected tables', async () => {
+        const definitions = ['CaptureBudgetA', 'CaptureBudgetB'].map(tableName => ({ tableName, properties: [
+            { name: 'label', kind: 'primitive' as const, type: 'string' as const, nullable: false },
+            { name: 'payload', kind: 'primitive' as const, type: 'string' as const, nullable: true },
+        ] }));
+        const models = defineModels({ formatVersion: 1, models: definitions });
+        const native = new module.Lattice(newPath('capture-table-budget'), buildSchemas(Object.values(models))); register(native);
+        const db = Object.assign(Object.create(Lattice.prototype), { db: native }) as Lattice;
+        const rows: any[] = [];
+        const selection = definitions.map(model => ({ table: model.tableName, properties: ['label'], maxRows: 17 }));
+        setWasmModule(module);
+        try {
+            for (const { tableName } of definitions) for (let i = 0; i < 17; ++i) {
+                const Row = models[tableName]!;
+                const row = new Row({ label: `${tableName}-${i}`, payload: 'x'.repeat(CAPTURE_LIMITS.cellBytes) });
+                rows.push(row); await db.add(row);
+            }
+            for (const part of selection) assert.equal(db.captureValuesSync([part]).rows.length, 17, 'Each table is within the total bound alone');
+            assert.throws(() => db.captureValuesSync(selection), /aggregate byte bound/, 'The budget is shared across every selected table');
+            for (const row of rows) row.payload = null;
+            rows[33].label = 'after-aggregate-refusal';
+            const recovered = db.captureValuesSync(selection);
+            assert.equal(recovered.rows.length, 34);
+            assert.equal(recovered.rows.find(row => row.globalId === rows[33].globalId)!.values.label, 'after-aggregate-refusal');
+            return { tables: 2, rowsPerTable: 17, individualTablesAdmitted: true, combinedBytesRefused: true, completeRecovery: true };
+        } finally { setWasmModule(null); for (const row of rows) row[DYNAMIC_OBJECT].delete(); dispose(native); }
+    });
+    await test('detached aggregate type admission checks late rows while preserving nullable nulls', () => fixture(async ({ native, add }) => {
+        const first = await add('first', 1n, 0), second = await add('second', 2n, -0.125), last = await add('last', 3n, 1);
+        const selection = [{ table, properties: ['label', 'seq', 'at', 'optional'], maxRows: 3 }];
+        const before = captureValuesSync(native, selection);
+        assert.equal(before.rows.length, 3);
+        assert.ok(before.rows.every(row => row.values.optional === null));
+        last[DYNAMIC_OBJECT].setString('seq', 'invalid-late-int');
+        assert.throws(() => captureValuesSync(native, selection), /stored scalar type/);
+        last.seq = 4n; last.label = 'after-late-refusal';
+        const recovered = captureValuesSync(native, selection);
+        for (const unchanged of [first, second])
+            assert.deepEqual(recovered.rows.find(row => row.globalId === unchanged.globalId)!.values, before.rows.find(row => row.globalId === unchanged.globalId)!.values);
+        assert.deepEqual({ ...recovered.rows.find(row => row.globalId === last.globalId)!.values }, { label: 'after-late-refusal', seq: 4n, at: 1, optional: null });
+        assert.equal(before.rows.find(row => row.globalId === last.globalId)!.values.seq, 3n, 'Earlier detached values remain immutable');
+        return { lateInvalidTypeRefused: true, nullableNullsRetained: true, siblingValuesUnchanged: true, detachedValuesUnchanged: true, postFailureWrite: true };
+    }));
 }
