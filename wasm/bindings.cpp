@@ -2234,6 +2234,19 @@ public:
         ref_->get()->sync_now();
     }
 
+    // These two operations deliberately do not retire observers, shut down the
+    // scheduler, release storage or evict its cache. JavaScript must establish
+    // physical WebSocket closure between them on a later browser task.
+    void disconnectSync() {
+        require_exclusive_sync_owner();
+        ref_->get()->disconnect_sync();
+    }
+
+    void connectSync() {
+        require_exclusive_sync_owner();
+        ref_->get()->connect_sync();
+    }
+
     // Stop incoming work on the final owner while retaining SQLite for the
     // final asynchronous OPFS snapshot. Other live handles keep their transport.
     std::string prepareClose() {
@@ -2729,6 +2742,15 @@ public:
     }
 
 private:
+    void require_exclusive_sync_owner() const {
+        if (!ref_ || !owns_reference_ || audit_only_) throw_js_error("Live writable sync owner required");
+        const auto owner = owner_scheduler();
+        const auto holder = native_holders_.find(ref_->get());
+        if (!owner || !owner->can_invoke() || owner->socket().isNull()) throw_js_error("Sync owner is unavailable");
+        if (holder == native_holders_.end() || holder->second != 1) throw_js_error("Sync reconnect requires an exclusive native owner");
+        if (owner->executing()) throw_js_error("Sync reconnect requires a later browser task");
+    }
+
     swift_lattice_ref* ref_ = nullptr;
     // Core copies observer callbacks into queued batches. Shared contexts
     // keep those copies valid; retirement suppresses them without deleting
@@ -3168,6 +3190,8 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("watchSyncSocket", &JsLattice::watchSyncSocket)
         .function("unwatchSyncSocket", &JsLattice::unwatchSyncSocket)
         .function("requestSyncUpload", &JsLattice::requestSyncUpload)
+        .function("disconnectSync", &JsLattice::disconnectSync)
+        .function("connectSync", &JsLattice::connectSync)
         .function("prepareClose", &JsLattice::prepareClose)
         .function("getPendingSyncUploadCount", &JsLattice::getPendingSyncUploadCount)
         .function("onSyncProgress", &JsLattice::onSyncProgress)

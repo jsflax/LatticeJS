@@ -1,5 +1,5 @@
 // Main Lattice class - user-facing API
-import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult, SyncConfiguration } from './types';
+import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult, LatticeReconnectOptions, SyncConfiguration } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
 import { assertSafeAuditValue, parseSafeAuditJSON } from './audit-json';
 import { captureValuesSync as captureDetachedValues, type CaptureSelector, type CapturedValues } from './capture-values';
@@ -135,6 +135,7 @@ export class Lattice {
     private socketWatchId: number | null = null;
     private readonly stopWaits = new Set<() => void>();
     private closePromise: Promise<LatticeCloseResult> | null = null;
+    private reconnectPromise: Promise<SyncStateInfo> | null = null;
     private nativeCleanupResult: LatticeCloseResult['native'] | null = null;
     private readonly observerDisposers = new Set<() => void>();
 
@@ -221,18 +222,21 @@ export class Lattice {
         try {
             this.socketWatchId = this.db.watchSyncSocket(socket => {
                 if (this.closing) return;
-                if (socket === (this.syncSockets[0] ?? null)) return;
-                // A native handoff, not JS lease counts, determines old transport
-                // closure. Late watcher delivery cannot close a sibling's socket.
-                forgetSyncSockets(this.syncSockets);
-                this.syncSockets = socket ? [socket] : [];
-                claimSyncSockets(this.syncSockets);
-                this.syncState.bind(socket);
+                this.adoptSyncSocket(socket);
             });
         } catch (error) {
             void this.close();
             throw error;
         }
+    }
+
+    private adoptSyncSocket(socket: TrackedSyncSocket | null): void {
+        if (socket === (this.syncSockets[0] ?? null)) return;
+        // A native handoff, not JS lease counts, determines old transport closure.
+        forgetSyncSockets(this.syncSockets);
+        this.syncSockets = socket ? [socket] : [];
+        claimSyncSockets(this.syncSockets);
+        this.syncState.bind(socket);
     }
 
     /**
@@ -1127,6 +1131,103 @@ export class Lattice {
      */
     onSyncState(callback: ((info: SyncStateInfo) => void) | null): () => void {
         return this.syncState.subscribe(callback);
+    }
+
+    /** Explicitly reconnect one exclusive native owner without replacing its
+     * store or observers. Concurrent calls share one attempt and the first
+     * deadline. Resolution proves a new transport opened, not replica catch-up
+     * or write acknowledgement. No automatic retry policy is enabled. */
+    reconnectSync(options: LatticeReconnectOptions = {}): Promise<SyncStateInfo> {
+        const timeoutMs = options.timeoutMs ?? 10000;
+        if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 30000)
+            throw new RangeError('Reconnect timeout must be finite milliseconds between 0 and 30000.');
+        this.assertOpen();
+        if (!this.syncConfigured || !this.hasNativeLifecycle() || !this.db.disconnectSync || !this.db.connectSync)
+            throw new Error('Exclusive native reconnect capability is unavailable.');
+        if (this.syncAdmission?.isDisposed) throw new Error('Sync admission owner is closed.');
+        if (this.reconnectPromise) return this.reconnectPromise;
+        const cancellation = new AbortController(), stop = () => cancellation.abort();
+        const externalSignal = this.syncAdmission?.signal;
+        if (externalSignal?.aborted) throw new Error('Sync admission owner is closed.');
+        this.stopWaits.add(stop); externalSignal?.addEventListener('abort', stop, { once: true });
+        const deadline = performance.now() + timeoutMs;
+        const remaining = () => {
+            this.assertOpen();
+            if (cancellation.signal.aborted || this.syncAdmission?.isDisposed) throw new Error('Sync reconnect cancelled.');
+            const value = deadline - performance.now();
+            if (value <= 0) throw new Error('Sync reconnect timed out.');
+            return value;
+        };
+        let off = () => {}, attemptedConnect = false;
+        const operation = (async () => {
+            try {
+                // Never disconnect inside a native observer/transport callback.
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                remaining();
+                const oldSocket = this.db.getSyncSocket!();
+                if (!oldSocket) throw new Error('Sync transport is unavailable.');
+                // Native rejects shared/released/executing owners before any
+                // mutation. If a later transport operation throws, conservatively
+                // retire this wrapper's connected claim; its sibling is untouched.
+                try { this.db.disconnectSync!(); }
+                catch (error) { this.syncState.fail(); throw error; }
+                this.adoptSyncSocket(oldSocket);
+                this.syncState.bind(oldSocket); // Publish stale even if the transport detached its native handlers.
+                const generation = this.syncState.state.connectionGeneration;
+                const closed = this.syncAdmission ?
+                    await this.syncAdmission.waitForClose(remaining(), cancellation.signal) :
+                    await waitForSyncSocketsClosed([oldSocket], remaining(), cancellation.signal);
+                remaining();
+                if (closed !== 'closed') throw new Error('Previous sync transport closure is unknown.');
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                remaining();
+                let finish!: (error?: unknown, value?: SyncStateInfo) => void;
+                const openTimeoutMs = remaining();
+                const opening = new Promise<SyncStateInfo>((resolve, reject) => {
+                    let settled = false;
+                    const cancel = () => finish(new Error('Sync reconnect cancelled.'));
+                    const timer = setTimeout(() => finish(new Error('Sync reconnect timed out.')), openTimeoutMs);
+                    finish = (error, value) => {
+                        if (settled) return;
+                        settled = true; clearTimeout(timer); cancellation.signal.removeEventListener('abort', cancel);
+                        if (error !== undefined) reject(error); else resolve(value!);
+                    };
+                    cancellation.signal.addEventListener('abort', cancel, { once: true });
+                    off = this.syncState.subscribeInternal(info => {
+                        if (info.connectionGeneration <= generation) return;
+                        if (info.state === 'open') {
+                            try { remaining(); finish(undefined, info); } catch (error) { finish(error); }
+                        } else if (info.state === 'closed' || info.state === 'error') finish(new Error('Sync reconnect did not open.'));
+                    });
+                });
+                try {
+                    remaining(); attemptedConnect = true;
+                    this.db.connectSync!(); // Recheck exclusive ownership after the asynchronous close barrier.
+                    remaining();
+                    const socket = this.db.getSyncSocket!();
+                    if (!socket || socket === oldSocket) throw new Error('Native reconnect did not replace its transport.');
+                    this.adoptSyncSocket(socket);
+                } catch (error) { finish(error); }
+                const opened = await opening;
+                remaining(); return opened;
+            } catch (error) {
+                // Cancel admission after an open timeout/refusal. Leave physical
+                // tracking intact; no later call may skip its close barrier.
+                if (attemptedConnect && !this.closing) {
+                    await new Promise<void>(resolve => setTimeout(resolve, 0));
+                    if (!this.closing) {
+                        try { this.db.disconnectSync!(); } catch { /* The failure remains explicit. */ }
+                    }
+                }
+                throw error;
+            } finally {
+                off(); this.stopWaits.delete(stop); externalSignal?.removeEventListener('abort', stop);
+            }
+        })();
+        this.reconnectPromise = operation;
+        const clear = () => { if (this.reconnectPromise === operation) this.reconnectPromise = null; };
+        void operation.then(clear, clear);
+        return operation;
     }
 
     /** Observe sync progress with an idempotent disposer. Legacy WASM only retires JS delivery. */

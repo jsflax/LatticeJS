@@ -1,7 +1,7 @@
 // Real browser/public loader against the loopback cookie gate. No external account.
 import { Lattice, LogLevel } from '../../src/lattice';
 import { defineModels } from '../../src/explicit-models';
-import { getWasmModule } from '../../src/storage';
+import { DYNAMIC_OBJECT, getWasmModule } from '../../src/storage';
 import type { SyncAdmissionContext, SyncStateInfo } from '../../src/types';
 
 const { AdmissionNote } = defineModels({ formatVersion: 1, models: [{ tableName: 'AdmissionNote', properties: [
@@ -134,7 +134,54 @@ const gate = {
         const final = await stats();
         check(final.upgrades === 3 && final.rejectedUpgrades === 1, 'Unexpected upgrade or retry');
         check(final.authorizationHeaders === 0 && final.credentialQueries === 0, 'Credentials reached the upgrade URL/header');
-        return { checks, stats: final, violations, diagnostics: getWasmModule()._lifecycleDiagnostics(),
+
+        const reconnecting = await opened(':memory:admission-same-store');
+        let wrapper: any;
+        try {
+            await until(() => reconnecting.states.at(-1)?.state === 'open', 'initial same-store connection');
+            await until(async () => await reconnecting.db.count(AdmissionNote) === 1, 'same-store received row');
+            const beforeReconnect = await stats();
+            const identity = reconnecting.states.at(-1)!;
+            const ownerCounts = getWasmModule()._lifecycleDiagnostics();
+            let deliveries = 0;
+            const off = reconnecting.db.observeTable(AdmissionNote, () => deliveries++);
+            const recovery = reconnecting.db.reconnectSync({ timeoutMs: 5000 });
+            check(reconnecting.db.reconnectSync({ timeoutMs: 1 }) === recovery, 'Concurrent recovery did not coalesce');
+            const connected = await recovery;
+            check(connected.state === 'open' && connected.instanceId === identity.instanceId &&
+                connected.connectionGeneration === identity.connectionGeneration + 1, 'Recovery changed owner or reused generation');
+            check(reconnecting.states.some(value => value.connectionGeneration === identity.connectionGeneration && value.state === 'closed'),
+                'Recovery never exposed disconnected state');
+            const counts = getWasmModule()._lifecycleDiagnostics();
+            for (const key of ['nativeOwners', 'schedulers', 'retainedHandles', 'nativeDatabases'] as const) {
+                check(Number.isInteger(ownerCounts[key]) && ownerCounts[key] > 0 && counts[key] === ownerCounts[key],
+                    'Recovery replaced the native store owner');
+            }
+            check(await reconnecting.db.count(AdmissionNote) === 1, 'Recovery lost the previously received store');
+            const row = new AdmissionNote({ title: 'Same-store observer retained' }); wrapper = (row as any)[DYNAMIC_OBJECT];
+            await reconnecting.db.add(row);
+            await until(() => deliveries > 0, 'observer after recovery'); off();
+            check(await reconnecting.db.count(AdmissionNote) === 2, 'Recovered owner did not retain local writes');
+            const afterReconnect = await stats();
+            check(afterReconnect.tickets === beforeReconnect.tickets + 1 && afterReconnect.upgrades === beforeReconnect.upgrades + 1,
+                'Recovery did not obtain exactly one fresh ticket and upgrade');
+            const pair = attemptContexts.slice(-2);
+            check(pair[0].instanceId === pair[1].instanceId && pair[0].generation === 1 && pair[1].generation === 2 &&
+                pair[0].signal.aborted && !pair[1].signal.aborted, 'Same-store admission did not retire its prior generation');
+        } finally {
+            try { if (wrapper && !wrapper.isDeleted()) wrapper.delete(); }
+            finally { await reconnecting.db.close(); }
+        }
+        await released();
+        await until(async () => (await stats()).live === 0, 'all server-side transports closed');
+        const afterReconnect = await stats();
+        check(afterReconnect.upgrades === 5 && afterReconnect.rejectedUpgrades === 1 && afterReconnect.maxOpen === 1 &&
+            afterReconnect.closed === afterReconnect.upgrades,
+            'Recovery overlapped OPEN transports, retained a peer or attempted an unexpected upgrade');
+        check(afterReconnect.authorizationHeaders === 0 && afterReconnect.credentialQueries === 0, 'Recovery leaked credentials');
+        check(attemptContexts.every(context => context.signal.aborted), 'Recovery retained live admission');
+        checks.push({ name: 'explicit same-store reconnect gets fresh admission, preserves observers and never overlaps OPEN peers' });
+        return { checks, stats: afterReconnect, violations, diagnostics: getWasmModule()._lifecycleDiagnostics(),
             contextCount: attemptContexts.length, cookieReadable: cookieReadableAtEndpoint() };
     },
 };

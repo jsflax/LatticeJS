@@ -12,7 +12,7 @@ export default async function lifecycleWasm() {
                 if (!store) {
                     const socket = syncUrl ? socketFactory(syncUrl) : null;
                     if (socket) socket._lattice_client = control.nextClient++;
-                    store = { socket, holders: 0 };
+                    store = { socket, socketFactory, syncUrl, holders: 0 };
                     control.stores.set(path, store);
                 }
                 this.store = store; store.holders++;
@@ -24,6 +24,26 @@ export default async function lifecycleWasm() {
                 const id = this.nextId++; this.watchers.set(id, callback); callback(this.store.socket); return id;
             }
             unwatchSyncSocket(id) { this.watchers.delete(id); }
+            requireExclusiveSyncOwner() {
+                if (this.released || !this.store.socket) throw new Error('Sync owner is unavailable');
+                if (this.store.holders !== 1) throw new Error('Sync reconnect requires an exclusive native owner');
+                if (control.executing) throw new Error('Sync reconnect requires a later browser task');
+            }
+            disconnectSync() {
+                this.requireExclusiveSyncOwner();
+                control.disconnects = (control.disconnects ?? 0) + 1;
+                this.store.socket.close();
+            }
+            connectSync() {
+                this.requireExclusiveSyncOwner();
+                control.connects = (control.connects ?? 0) + 1;
+                const socket = this.store.socketFactory(this.store.syncUrl);
+                socket._lattice_client = control.nextClient++;
+                this.store.socket = socket;
+                // The public code also adopts the exact native socket before
+                // relying on the real scheduler's later watcher delivery.
+                for (const callback of this.watchers.values()) callback(socket);
+            }
             prepareClose() {
                 this.watchers.clear(); this.observers.clear();
                 if (this.released) return 'already-released';

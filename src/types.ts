@@ -184,6 +184,9 @@ export interface LatticeWasm {
     watchSyncSocket?(callback: (socket: import('./sync-socket').TrackedSyncSocket | null) => void): number;
     unwatchSyncSocket?(observerId: number): void;
     prepareClose?(): 'exclusive' | 'shared' | 'already-released';
+    /** Same-store reconnect requires both guarded exclusive-owner bindings. */
+    disconnectSync?(): void;
+    connectSync?(): void;
     requestSyncUpload?(): void;
     getPendingSyncUploadCount?(): number;
     onSyncProgress(callback: (progress: SyncProgress) => void): number;
@@ -217,6 +220,11 @@ export interface LatticeCloseOptions {
     transportTimeoutMs?: number;
     /** Wait for the final persistent save, default 2000ms. */
     snapshotTimeoutMs?: number;
+}
+
+export interface LatticeReconnectOptions {
+    /** Overall disconnect/physical-close/admission/open deadline; default 10000ms, maximum 30000ms. */
+    timeoutMs?: number;
 }
 
 export interface LatticeCloseResult {

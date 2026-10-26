@@ -51,6 +51,7 @@ export type {
     SyncStateInfo,
     LatticeCloseOptions,
     LatticeCloseResult,
+    LatticeReconnectOptions,
     SyncFilter,
     MigrationContext,
     TableChanges,

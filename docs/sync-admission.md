@@ -64,8 +64,9 @@ authentication configuration permits empty token sync only for an admitted nativ
 open. Its mode participates in the bridge cache fingerprint. No dummy token is used.
 Legacy bearer URL/header behavior is outside this new mode and unchanged.
 
-Reconnection remains app-owned, as in current Emscripten Core. Closing and reopening
-runs fresh admission; no automatic retry policy is added. `close()` cancels the
+Reconnection remains app-owned, as in current Emscripten Core. `reconnectSync()`
+requests a new transport on the same live store; closing and reopening also runs
+fresh admission. No automatic retry policy is added. `close()` cancels the
 admitted transport synchronously, so callers requiring upload drain must request and
 finish that drain before close. The normal close receipt still reports actual pending
 uploads, transport retirement, snapshot disposition, and native release.
@@ -79,6 +80,37 @@ physical closure: an unobserved close reports `timeout`. A later close event rel
 the retained listener but does not rewrite that earlier receipt. This correction is
 covered by JavaScript lifecycle tests; the historical browser receipts below do not
 establish delayed-close ordering.
+
+## Explicit same-store recovery (candidate)
+
+```ts
+const state = await db.reconnectSync({ timeoutMs: 10000 });
+// state identifies the same instance and a new connection generation.
+// An open socket does not prove replica catch-up or acknowledgement of writes.
+```
+
+This operation requires the new native `disconnectSync`/`connectSync` capability
+and one exclusive native store owner. Older runtimes and shared owners refuse;
+they do not silently fall back to replacing the database. The method leaves rows,
+observers, pending local writes and the store identity intact. Native disconnect
+runs on a later browser task so row/transport callbacks may request recovery.
+Only after every previous raw transport is known closed does it connect again.
+Each admitted attempt calls the original `beforeConnect` with a fresh signal and
+monotonically increasing generation. It never reuses a ticket returned by the host.
+
+Concurrent requests share the same promise and first deadline. The optional finite
+timeout is 0–30000 milliseconds (default 10000), covering disconnect, physical
+closure, admission and the new-generation open. A timeout/refusal rejects, cancels
+any new pending attempt, and leaves the database available for local reads and a
+later explicit retry. Unknown physical closure refuses a replacement until actual
+closure is observed. Closing the database or aborting its configured admission
+signal cancels recovery; a revoked admission owner cannot reconnect. Host policy
+still decides whether the grant remains valid, and must keep stale actions gated.
+
+These additions are source candidates with focused lifecycle regressions and an
+extended existing browser admission fixture. Fresh Wasm compilation and real
+browser qualification remain pending; the historical receipts below do not
+qualify the reconnect API.
 
 ## Qualification
 

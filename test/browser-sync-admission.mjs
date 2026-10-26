@@ -36,7 +36,7 @@ const routes = new Map([
     ['/lattice.js', ['text/javascript', fs.readFileSync(loader.path)]],
     ['/lattice.wasm', ['application/wasm', fs.readFileSync(wasm.path)]],
 ]);
-const counts = { tickets: 0, refusedTickets: 0, upgrades: 0, rejectedUpgrades: 0, resumeCursors: 0, authorizationHeaders: 0, credentialQueries: 0 };
+const counts = { tickets: 0, refusedTickets: 0, upgrades: 0, rejectedUpgrades: 0, resumeCursors: 0, authorizationHeaders: 0, credentialQueries: 0, live: 0, closed: 0, maxOpen: 0 };
 // These opaque fixture cookies stay in process memory and never enter the receipt.
 const tickets = new Set();
 const serverErrors = [];
@@ -78,6 +78,9 @@ server.on('upgrade', (req, socket, head) => {
     }
     ++counts.upgrades;
     ws.handleUpgrade(req, socket, head, client => {
+        ++counts.live;
+        counts.maxOpen = Math.max(counts.maxOpen, [...ws.clients].filter(peer => peer.readyState === 1).length);
+        client.once('close', () => { --counts.live; ++counts.closed; });
         ws.emit('connection', client, req);
         client.send(JSON.stringify({ kind: 'auditLog', auditLog: [{ id: 1, globalId: eventId, tableName: 'AdmissionNote',
             operation: 'INSERT', rowId: 1, globalRowId: '0545ebef-4dd3-471b-aa84-c7eef28ff3cb',
@@ -105,7 +108,7 @@ try {
     ]);
     assert.deepEqual(serverErrors, []);
     assert.deepEqual(receipt.errors, []); assert.deepEqual(receipt.externalRequests, []);
-    assert.equal(receipt.result.checks.length, 4); assert.equal(receipt.result.cookieReadable, false);
+    assert.equal(receipt.result.checks.length, 5); assert.equal(receipt.result.cookieReadable, false);
     assert.equal(describe(loader.path).sha256, loader.sha256); assert.equal(describe(wasm.path).sha256, wasm.sha256);
     receipt.passed = true; await context.close();
 } catch (error) { receipt.failure = error.stack ?? String(error); process.exitCode = 1; }

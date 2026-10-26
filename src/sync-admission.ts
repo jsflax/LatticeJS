@@ -156,6 +156,9 @@ export class SyncAdmissionOwner {
     private readonly externalAbort = () => this.dispose();
     private readonly url: string;
 
+    get isDisposed(): boolean { return this.disposed; }
+    get signal(): AbortSignal | undefined { return this.externalSignal; }
+
     constructor(
         config: SyncConfiguration,
         private readonly instanceId: string,
@@ -203,15 +206,19 @@ export class SyncAdmissionOwner {
 
     /** Wait for every raw socket, including superseded attempts. The proxy's
      * synthetic close/readyState is deliberately not evidence for this result. */
-    waitForClose(timeoutMs: number): Promise<'closed' | 'timeout' | 'unavailable'> {
-        if (!this.disposed) return Promise.resolve('unavailable');
+    waitForClose(timeoutMs: number, signal?: AbortSignal): Promise<'closed' | 'timeout' | 'unavailable'> {
+        // Reconnect retires just the current attempt, retaining this owner and
+        // its admission hook. An active attempt is never evidence of closure.
+        if (this.current || signal?.aborted) return Promise.resolve('unavailable');
         return new Promise(resolve => {
             let settled = false;
             const timer = setTimeout(() => finish('timeout'), timeoutMs);
-            const finish = (result: 'closed' | 'timeout') => {
+            const stop = () => finish('unavailable');
+            const finish = (result: 'closed' | 'timeout' | 'unavailable') => {
                 if (settled) return;
-                settled = true; clearTimeout(timer); resolve(result);
+                settled = true; clearTimeout(timer); signal?.removeEventListener('abort', stop); resolve(result);
             };
+            signal?.addEventListener('abort', stop, { once: true });
             void Promise.all([...this.physicalAttempts].map(socket => socket.physicalClose)).then(() => finish('closed'));
         });
     }
