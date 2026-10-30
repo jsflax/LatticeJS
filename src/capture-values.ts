@@ -18,8 +18,29 @@ export interface CapturedValues { readonly formatVersion: 1; readonly rows: read
 export interface CaptureNative { captureValuesSync?: (selectors: readonly CaptureSelector[]) => unknown }
 export const CAPTURE_LIMITS = Object.freeze({ selectors: 16, properties: 64, rows: 16384,
     cellBytes: 262144, totalBytes: 8 * 1024 * 1024, workCells: 262144 });
-const encoder = new TextEncoder();
+const nonASCII = /[^\x00-\x7f]/;
 const own = (object: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(object, key);
+
+/** Count like TextEncoder without allocating bytes that capture only discards.
+ * Lone UTF-16 surrogates encode as U+FFFD (three bytes), not an input error.
+ * An over-limit cell is always refused, so stop once its exact limit is crossed. */
+function captureTextBytes(value: string): number {
+    // UTF-8 is never shorter than UTF-16 code-unit length. Keep oversized inputs
+    // out of either scan; let the native regexp scan common ASCII/base64 values.
+    if (value.length > CAPTURE_LIMITS.cellBytes || !nonASCII.test(value)) return value.length;
+    let bytes = 0;
+    for (let i = 0; i < value.length; ++i) {
+        const code = value.charCodeAt(i);
+        if (code < 0x80) ++bytes;
+        else if (code < 0x800) bytes += 2;
+        else if (code >= 0xd800 && code <= 0xdbff &&
+            value.charCodeAt(i + 1) >= 0xdc00 && value.charCodeAt(i + 1) <= 0xdfff) {
+            bytes += 4; ++i;
+        } else bytes += 3;
+        if (bytes > CAPTURE_LIMITS.cellBytes) return bytes;
+    }
+    return bytes;
+}
 
 function record(value: unknown, name: string): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -36,7 +57,7 @@ function list(value: unknown, limit: number, name: string): readonly unknown[] {
     return value;
 }
 function name(value: unknown, label: string): string {
-    if (typeof value !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) || encoder.encode(value).length > 128) throw new Error(`Invalid capture ${label}`);
+    if (typeof value !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) || value.length > 128) throw new Error(`Invalid capture ${label}`);
     return value;
 }
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string) {
@@ -80,13 +101,13 @@ export function captureValuesSync(native: CaptureNative, input: readonly Capture
     };
     const text = (value: unknown, label: string, nonempty = false): string => {
         if (typeof value !== 'string' || (nonempty && !value.length)) throw new Error(`Invalid capture ${label}`);
-        take(encoder.encode(value).length); return value;
+        take(captureTextBytes(value)); return value;
     };
     const rows = list(result.rows, CAPTURE_LIMITS.rows, 'capture rows').map(value => {
         const row = record(value, 'capture row'); exactKeys(row, ['table', 'globalId', 'values'], 'capture row');
         const table = name(row.table, 'row table'), selector = byTable.get(table);
         if (!selector) throw new Error('Unexpected capture table');
-        take(encoder.encode(table).length);
+        take(table.length);
         const globalId = text(row.globalId, 'globalId', true), identity = JSON.stringify([table, globalId]);
         if (identities.has(identity)) throw new Error('Duplicate captured row'); identities.add(identity);
         const count = (counts.get(table) ?? 0) + 1; counts.set(table, count);
@@ -113,7 +134,7 @@ export function captureValuesSync(native: CaptureNative, input: readonly Capture
                 const link = record(cell, 'captured link'); exactKeys(link, ['table', 'globalId'], 'captured link');
                 const target = name(link.table, 'link table');
                 if (!byTable.has(target)) throw new Error('Captured link target must be selected');
-                take(encoder.encode(target).length);
+                take(target.length);
                 copied[property] = Object.freeze({ table: target, globalId: text(link.globalId, 'link globalId', true) });
             }
         }

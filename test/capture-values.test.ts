@@ -69,3 +69,103 @@ describe('synchronous detached capture boundary', () => {
         expect(() => captureValuesSync({ captureValuesSync: () => result }, [{ table: 'Row', properties: ['text'] }])).toThrow(/aggregate byte/);
     });
 });
+
+
+describe('capture UTF-8 accounting without discarded byte arrays', () => {
+    const oneText = (text: string) => ({ formatVersion: 1, rows: [{ table: 'Row', globalId: 'r', values: { text } }] });
+    const textSelector = [{ table: 'Row', properties: ['text'] }];
+    it.each([
+        '', 'ASCII\0\u007f', '\u0080\u07ff', '\u0800\uffff', '😀', '\ud800\udc00', '\udbff\udfff',
+        '\ud800', '\udbff', '\udc00', '\udfff', '\ud800a', '\udc00\ud800', '\ud800\ud800\udc00',
+        'aé中😀\ud800z\udfff',
+    ])('preserves TextEncoder cell-limit decisions and unchanged text for %j', value => {
+        const bytes = new TextEncoder().encode(value).length;
+        const exact = value + 'a'.repeat(CAPTURE_LIMITS.cellBytes - bytes);
+        const native = { captureValuesSync: vi.fn(() => oneText(exact)) };
+        const result = captureValuesSync(native, textSelector);
+        expect(result.rows[0].values.text).toBe(exact);
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(1);
+        native.captureValuesSync.mockReturnValue(oneText(exact + 'a'));
+        expect(() => captureValuesSync(native, textSelector)).toThrow('Capture cell byte bound exceeded');
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(2);
+    });
+    it.each([
+        ['two-byte', 'é'], ['BMP', '中'], ['astral', '😀'], ['lone surrogates', '\ud800'],
+        ['mixed Unicode', 'aé中😀\ud800z\udfff'],
+    ])('matches TextEncoder at the cell boundary for large repeated %s content', (_label, pattern) => {
+        const encoder = new TextEncoder(), patternBytes = encoder.encode(pattern).length;
+        const text = pattern.repeat(Math.floor(CAPTURE_LIMITS.cellBytes / patternBytes)) +
+            'a'.repeat(CAPTURE_LIMITS.cellBytes % patternBytes);
+        expect(encoder.encode(text).length).toBe(CAPTURE_LIMITS.cellBytes);
+        const native = { captureValuesSync: vi.fn(() => oneText(text)) };
+        expect(captureValuesSync(native, textSelector).rows[0].values.text).toBe(text);
+        native.captureValuesSync.mockReturnValue(oneText(text + 'a'));
+        expect(() => captureValuesSync(native, textSelector)).toThrow('Capture cell byte bound exceeded');
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(2);
+    });
+    it('counts a non-ASCII suffix after a large ASCII prefix at the exact byte boundary', () => {
+        const text = 'a'.repeat(CAPTURE_LIMITS.cellBytes - 3) + '中';
+        expect(new TextEncoder().encode(text).length).toBe(CAPTURE_LIMITS.cellBytes);
+        const native = { captureValuesSync: vi.fn(() => oneText(text)) };
+        expect(captureValuesSync(native, textSelector).rows[0].values.text).toBe(text);
+        native.captureValuesSync.mockReturnValue(oneText(text + 'a'));
+        expect(() => captureValuesSync(native, textSelector)).toThrow('Capture cell byte bound exceeded');
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(2);
+    });
+    it('keeps large ASCII out of the JavaScript scan and refuses oversized Unicode from its length', () => {
+        const text = 'a'.repeat(CAPTURE_LIMITS.cellBytes), oversized = '\ud800'.repeat(CAPTURE_LIMITS.cellBytes + 1);
+        const native = { captureValuesSync: vi.fn(() => oneText(text)) };
+        const scan = vi.spyOn(String.prototype, 'charCodeAt').mockImplementation(() => { throw new Error('Unexpected text scan'); });
+        let result: ReturnType<typeof captureValuesSync> | undefined, failure: unknown;
+        try {
+            result = captureValuesSync(native, textSelector);
+            native.captureValuesSync.mockReturnValue(oneText(oversized));
+            try { captureValuesSync(native, textSelector); } catch (error) { failure = error; }
+        } finally { scan.mockRestore(); }
+        expect(result?.rows[0].values.text).toBe(text);
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toBe('Capture cell byte bound exceeded');
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(2);
+    });
+    it('keeps exact aggregate accounting for row names, Unicode identities, links and text', () => {
+        const encoder = new TextEncoder();
+        const rows = Array.from({ length: CAPTURE_LIMITS.totalBytes / CAPTURE_LIMITS.cellBytes }, (_, i) => ({
+            table: 'Row', globalId: `r-${i}é`, values: {
+                text: 'x'.repeat(CAPTURE_LIMITS.cellBytes), parent: { table: 'Row', globalId: '\ud800😀' },
+            },
+        }));
+        const overhead = rows.reduce((total, row) => total + [row.table, row.globalId, row.values.parent.table,
+            row.values.parent.globalId].reduce((bytes, value) => bytes + encoder.encode(value).length, 0), 0);
+        rows[rows.length - 1].values.text = 'x'.repeat(CAPTURE_LIMITS.cellBytes - overhead);
+        const native = { captureValuesSync: vi.fn(() => ({ formatVersion: 1, rows })) };
+        const selectors = [{ table: 'Row', properties: ['text', 'parent'] }];
+        const result = captureValuesSync(native, selectors);
+        expect(result.rows).toHaveLength(rows.length);
+        expect(result.rows[0].values.parent).toEqual(rows[0].values.parent);
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(1);
+        rows[rows.length - 1].values.text += 'x';
+        expect(() => captureValuesSync(native, selectors)).toThrow('Capture aggregate byte bound exceeded');
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(2);
+    });
+    it('uses the same ASCII identifier bounds before calling native', () => {
+        const name = 'a'.repeat(128), selectors = [{ table: name, properties: [name] }];
+        const native = { captureValuesSync: vi.fn(() => ({ formatVersion: 1,
+            rows: [{ table: name, globalId: 'r', values: { [name]: 'kept' } }],
+        })) };
+        expect(captureValuesSync(native, selectors).rows[0].values[name]).toBe('kept');
+        for (const selector of [{ table: name + 'a', properties: [name] }, { table: name, properties: [name + 'a'] },
+            { table: 'é', properties: [name] }, { table: name, properties: ['é'] }]) {
+            expect(() => captureValuesSync(native, [selector])).toThrow(/Invalid capture/);
+        }
+        expect(native.captureValuesSync).toHaveBeenCalledTimes(1);
+    });
+    it('does not allocate encoded buffers merely to count capture strings', () => {
+        const native = { captureValuesSync: vi.fn(() => fixture()) };
+        const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+        try {
+            expect(captureValuesSync(native, selectors).rows[0].values.label).toBe('value');
+            expect(encode).not.toHaveBeenCalled();
+            expect(native.captureValuesSync).toHaveBeenCalledTimes(1);
+        } finally { encode.mockRestore(); }
+    });
+});
