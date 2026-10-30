@@ -5,6 +5,8 @@
 #include <sqlite3.h>
 #include <map>
 #include <unordered_set>
+#include <type_traits>
+#include <algorithm>
 
 // WASMFS is only available when WASMFS=1 is set
 #ifdef __EMSCRIPTEN_WASM_WORKERS__
@@ -16,11 +18,120 @@
 #include <dynamic_object.hpp>
 #include <list.hpp>
 #include <lattice/sync.hpp>
+#include "capture-values.hpp"
 
 #include <sys/stat.h>
 
 using namespace emscripten;
 using namespace lattice;
+
+// Decode one detached packet instead of crossing Embind for every row/cell.
+// Integer tags are private to this packet; public capture values remain BigInt.
+// Catch JS failures as data so the C++ detached buffers unwind normally.
+EM_JS(EM_VAL, lattice_decode_capture_packet, (const char* text), {
+    try {
+        const result = JSON.parse(UTF8ToString(text));
+        for (const row of result.rows) {
+            for (const key of Object.keys(row.values)) {
+                const value = row.values[key];
+                if (value !== null && typeof value === 'object' &&
+                    Object.prototype.hasOwnProperty.call(value, '$latticeInt64')) {
+                    row.values[key] = BigInt(value['$latticeInt64']);
+                }
+            }
+        }
+        return Emval.toHandle({ok: true, value: result});
+    } catch (_) {
+        return Emval.toHandle({ok: false});
+    }
+});
+
+// Emscripten's JS exception mode only unwinds C++ exceptions. Catch a user JS
+// error here and return it as data so the caller can throw *inside* C++; Core's
+// transaction and migration-context guards must run on a refused migration.
+EM_JS(EM_VAL, lattice_call_migration_js, (EM_VAL callback, EM_VAL context), {
+    try {
+        const result = Emval.toValue(callback)(Emval.toValue(context));
+        if (result && typeof result.then === 'function') {
+            Promise.resolve(result).catch(() => {});
+            return Emval.toHandle({ok: false, error: 'migration must complete synchronously'});
+        }
+        return Emval.toHandle({ok: true});
+    } catch (error) {
+        let message = 'Migration callback failed';
+        try { message = String(error && error.message !== undefined ? error.message : error); } catch (_) {}
+        return Emval.toHandle({ok: false, error: message});
+    }
+});
+
+// Browser admission returns a deferred socket synchronously. Convert host throws
+// to data before re-entering C++ so its owners unwind through C++ exceptions.
+EM_JS(EM_VAL, lattice_call_socket_factory, (EM_VAL factory, const char* url), {
+    try {
+        const socket = Emval.toValue(factory)(UTF8ToString(url));
+        if (!socket || typeof socket.addEventListener !== 'function' ||
+            typeof socket.removeEventListener !== 'function' || typeof socket.close !== 'function' ||
+            typeof socket.send !== 'function') throw new Error('Invalid admitted transport');
+        return Emval.toHandle({ok: true, socket});
+    } catch (_) {
+        return Emval.toHandle({ok: false, error: 'Sync admission owner refused connection'});
+    }
+});
+
+EM_JS(EM_VAL, lattice_path_identity, (const char* raw_path), {
+    try {
+        const path = UTF8ToString(raw_path);
+        // SQLite's memory URI identity is not a filesystem path.
+        if (path === ':memory:' || path.startsWith('file:')) return Emval.toHandle({ok: true, path});
+        const info = FS.analyzePath(path);
+        const resolved = info.exists ? info.path : info.parentExists ?
+            PATH.join2(info.parentPath, info.name) : PATH_FS.resolve(path);
+        return Emval.toHandle({ok: true, path: resolved});
+    } catch (_) { return Emval.toHandle({ok: false}); }
+});
+
+// A migration context belongs to the synchronous open callback. Reject a
+// retained token after that callback before touching Core's stack state. Tokens
+// are never reused, even when a later callback occupies the same stack address.
+static std::map<uint32_t, swift_migration_context_ref*> active_migrations;
+static uint32_t next_migration_token = 0;
+struct ActiveMigration {
+    uint32_t token;
+    explicit ActiveMigration(swift_migration_context_ref* ctx) {
+        if (next_migration_token == 0xffffffffu) throw std::runtime_error("Migration context tokens exhausted");
+        token = ++next_migration_token;
+        active_migrations.emplace(token, ctx);
+    }
+    ~ActiveMigration() { active_migrations.erase(token); }
+};
+static swift_migration_context_ref& migration_context_at(uint32_t token) {
+    auto found = active_migrations.find(token);
+    if (found == active_migrations.end()) throw std::runtime_error("Migration context is no longer active");
+    return *found->second;
+}
+// Return native failures as data too: allowing a C++ exception pointer to reach
+// the JavaScript callback would lose its cleanup when JS catches that number.
+template <typename Operation> static val migration_operation(Operation operation) {
+    val result = val::object();
+    try {
+        operation();
+        result.set("ok", true);
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    }
+    return result;
+}
+static val migration_rename_property(uint32_t token, const std::string& table,
+                                      const std::string& from, const std::string& to) {
+    return migration_operation([&] { migration_context_at(token).rename_property(table, from, to); });
+}
+static val migration_delete_all(uint32_t token, const std::string& table) {
+    return migration_operation([&] { migration_context_at(token).delete_all(table); });
+}
+static val migration_execute_sql(uint32_t token, const std::string& sql) {
+    return migration_operation([&] { migration_context_at(token).execute_sql(sql); });
+}
 
 // Debug logging that works in SharedWorker by posting to BroadcastChannel
 EM_JS(void, debugLogToChannel, (const char* msg), {
@@ -53,6 +164,8 @@ class emscripten_scheduler : public scheduler, public std::enable_shared_from_th
     bool stopped_ = false;
     unsigned dispatch_depth_ = 0;
     val socket_ = val::null();
+    val socket_factory_ = val::null();
+    bool admitted_ = false;
     uint64_t next_socket_listener_ = 1;
     uint64_t socket_generation_ = 0;
     std::map<uint64_t, std::function<void(val)>> socket_listeners_;
@@ -69,6 +182,7 @@ public:
     inline static size_t alive_count = 0;
     inline static size_t pending_count = 0;
     emscripten_scheduler() { ++alive_count; }
+    explicit emscripten_scheduler(val factory) : socket_factory_(std::move(factory)), admitted_(true) { ++alive_count; }
     ~emscripten_scheduler() override { shutdown(); --alive_count; }
 
     void invoke(std::function<void()>&& fn) override {
@@ -109,6 +223,7 @@ public:
         pending.clear();
         socket_listeners_.clear();
         socket_ = val::null();
+        socket_factory_ = val::null();
     }
 
     void set_socket(val socket) {
@@ -127,13 +242,23 @@ public:
     void unwatch_socket(uint64_t id) { socket_listeners_.erase(id); }
     val socket() const { return socket_; }
     bool executing() const { return dispatch_depth_ != 0; }
+    bool has_admission() const { return admitted_; }
+    val admitted_socket(const std::string& url) {
+        if (stopped_ || !has_admission()) throw std::runtime_error("Sync admission owner is closed");
+        auto result = val::take_ownership(lattice_call_socket_factory(socket_factory_.as_handle(), url.c_str()));
+        if (!result["ok"].as<bool>()) throw std::runtime_error(result["error"].as<std::string>());
+        return result["socket"];
+    }
 
     [[nodiscard]] bool is_on_thread() const noexcept override {
         return true;  // WASM is single-threaded
     }
 
     [[nodiscard]] bool is_same_as(const scheduler* other) const noexcept override {
-        return dynamic_cast<const emscripten_scheduler*>(other) != nullptr;
+        auto* peer = dynamic_cast<const emscripten_scheduler*>(other);
+        // An admitted transport is bound to one immutable host grant generation.
+        // It must never inherit a sibling scheduler's hook through Core caching.
+        return peer && ((has_admission() || peer->has_admission()) ? this == peer : true);
     }
 
     [[nodiscard]] bool can_invoke() const noexcept override {
@@ -198,8 +323,8 @@ public:
         }
 
         // Create WebSocket
-        val WebSocket = val::global("WebSocket");
-        ws_ = WebSocket.new_(final_url);
+        ws_ = scheduler_->has_admission() ? scheduler_->admitted_socket(final_url) :
+            val::global("WebSocket").new_(final_url);
         scheduler_->set_socket(ws_);
 
         // Set binary type to arraybuffer
@@ -615,6 +740,30 @@ class JsLinkList;
 // DynamicObjectRef wrapper for Embind
 // ============================================================================
 
+[[noreturn]] void throw_js_error(const std::string& msg);
+
+// Core's Swift bridge seals scalar failures and returns a default. Read its
+// error slot immediately, before another bridge call can clear it. C++ failures
+// must also become ordinary JS Errors rather than numeric exception pointers.
+template <typename Operation>
+static auto checked_object_call(dynamic_object_ref* ref, Operation operation, bool sealed = true) {
+    if (!ref || !ref->valid()) throw_js_error("Invalid native object");
+    try {
+        if constexpr (std::is_void_v<std::invoke_result_t<Operation>>) {
+            operation();
+            const auto error = sealed ? ref->last_query_error_message() : std::string();
+            if (!error.empty()) throw std::runtime_error(error);
+        } else {
+            auto result = operation();
+            const auto error = sealed ? ref->last_query_error_message() : std::string();
+            if (!error.empty()) throw std::runtime_error(error);
+            return result;
+        }
+    } catch (const std::exception& error) {
+        throw_js_error(error.what());
+    }
+}
+
 class JsDynamicObject {
 public:
     JsDynamicObject() : ref_(nullptr) {}
@@ -640,62 +789,81 @@ public:
         return *this;
     }
 
-    bool isValid() const { return ref_ != nullptr; }
+    bool isValid() const { return ref_ && ref_->valid(); }
 
     // Getters
     int64_t getInt(const std::string& name) const {
-        return ref_ ? ref_->get_int(name) : 0;
+        return checked_object_call(ref_, [&] { return ref_->get_int(name); });
     }
 
     std::string getString(const std::string& name) const {
-        return ref_ ? ref_->get_string(name) : "";
+        return checked_object_call(ref_, [&] { return ref_->get_string(name); });
     }
 
     double getDouble(const std::string& name) const {
-        return ref_ ? ref_->get_double(name) : 0.0;
+        return checked_object_call(ref_, [&] { return ref_->get_double(name); });
     }
 
     bool getBool(const std::string& name) const {
-        return ref_ ? ref_->get_bool(name) : false;
+        return checked_object_call(ref_, [&] { return ref_->get_bool(name); });
+    }
+
+    val getData(const std::string& name) const {
+        const auto bytes = checked_object_call(ref_, [&] { return ref_->get_data(name); });
+        // Copy into JS-owned storage; a view over the temporary vector would
+        // dangle at return and could also detach when Wasm memory grows.
+        val result = val::global("Uint8Array").new_(bytes.size());
+        if (!bytes.empty()) result.call<void>("set", val(typed_memory_view(bytes.size(), bytes.data())));
+        return result;
     }
 
     bool hasValue(const std::string& name) const {
-        return ref_ ? ref_->has_value(name) : false;
+        return checked_object_call(ref_, [&] { return ref_->has_value(name); });
     }
+
+    val getUnion(const std::string& name) const;
+    void setUnion(const std::string& name, const val& value);
 
     // Setters
     void setInt(const std::string& name, int64_t value) {
-        if (ref_) ref_->set_int(name, value);
+        checked_object_call(ref_, [&] { ref_->set_int(name, value); });
     }
 
     void setString(const std::string& name, const std::string& value) {
-        if (ref_) ref_->set_string(name, value);
+        checked_object_call(ref_, [&] { ref_->set_string(name, value); });
     }
 
     void setDouble(const std::string& name, double value) {
-        if (ref_) ref_->set_double(name, value);
+        checked_object_call(ref_, [&] { ref_->set_double(name, value); });
     }
 
     void setBool(const std::string& name, bool value) {
-        if (ref_) ref_->set_bool(name, value);
+        checked_object_call(ref_, [&] { ref_->set_bool(name, value); });
+    }
+
+    void setData(const std::string& name, const val& value) {
+        if (!value.instanceof(val::global("Uint8Array"))) throw_js_error("Byte fields require Uint8Array");
+        const auto bytes = convertJSArrayToNumberVector<uint8_t>(value);
+        checked_object_call(ref_, [&] { ref_->set_data(name, bytes); });
     }
 
     void setNil(const std::string& name) {
-        if (ref_) ref_->set_nil(name);
+        checked_object_call(ref_, [&] { ref_->set_nil(name); });
     }
 
     // Link handling - the key methods!
     JsDynamicObject getObject(const std::string& name) const {
-        if (!ref_) return JsDynamicObject();
-        auto* linked = ref_->get_object(name);
-        if (!linked) return JsDynamicObject();
-        return JsDynamicObject(linked);
+        return checked_object_call(ref_, [&] {
+            auto* linked = ref_->get_object(name);
+            return linked ? JsDynamicObject(linked) : JsDynamicObject();
+        }, false); // Core's link methods throw; they do not reset the scalar error slot.
     }
 
     void setObject(const std::string& name, JsDynamicObject& value) {
-        if (ref_ && value.ref_) {
+        if (!value.isValid()) throw_js_error("Invalid linked object");
+        checked_object_call(ref_, [&] {
             ref_->set_object(name, *value.ref_);
-        }
+        }, false);
     }
 
     // Get a link list property - forward declaration, implemented after JsLinkList
@@ -819,9 +987,178 @@ JsLinkList JsDynamicObject::getLinkList(const std::string& name) const {
 // Helper: Convert JS object to property_descriptor
 // ============================================================================
 
+static void require_identifier(const std::string& value) {
+    auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; };
+    if (value.empty() || value.size() > 128 || !letter(value.front()) ||
+        value == "__proto__" || value == "prototype" || value == "constructor")
+        throw std::invalid_argument("Invalid union storage identifier");
+    for (char c : value) if (!letter(c) && !(c >= '0' && c <= '9'))
+        throw std::invalid_argument("Invalid union storage identifier");
+}
+
+static std::string storage_name(std::string name) {
+    for (auto& c : name) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    return name;
+}
+
+static std::vector<std::string> record_fields(const val& value, const std::unordered_set<std::string>* allowed = nullptr) {
+    const auto object = val::global("Object");
+    if (value.isNull() || value.typeOf().as<std::string>() != "object" ||
+        val::global("Array").call<bool>("isArray", value)) throw std::invalid_argument("Expected a plain record");
+    const auto prototype = object.call<val>("getPrototypeOf", value);
+    if (!prototype.isNull() && !prototype.strictlyEquals(object["prototype"]))
+        throw std::invalid_argument("Expected a plain record");
+    if (object.call<val>("getOwnPropertySymbols", value)["length"].as<size_t>() != 0)
+        throw std::invalid_argument("Symbol fields are unsupported");
+    const auto descriptors = object.call<val>("getOwnPropertyDescriptors", value);
+    const auto names = object.call<val>("getOwnPropertyNames", value);
+    const auto count = names["length"].as<size_t>();
+    if (count > 256) throw std::invalid_argument("Too many record fields");
+    std::vector<std::string> result;
+    for (size_t i = 0; i < count; ++i) {
+        auto name = names[i].as<std::string>();
+        const auto descriptor = descriptors[name];
+        if (!object.call<bool>("hasOwn", descriptor, val("value")) || !descriptor["enumerable"].as<bool>())
+            throw std::invalid_argument("Accessor or hidden fields are unsupported");
+        if (allowed && !allowed->count(name)) throw std::invalid_argument("Unsupported record field: " + name);
+        result.push_back(std::move(name));
+    }
+    return result;
+}
+
+static size_t bounded_array(const val& value, size_t maximum) {
+    if (!val::global("Array").call<bool>("isArray", value)) throw std::invalid_argument("Expected an array");
+    const auto count = value["length"].as<size_t>();
+    if (count > maximum) throw std::invalid_argument("Array exceeds the union descriptor limit");
+    const auto object = val::global("Object");
+    const auto names = object.call<val>("getOwnPropertyNames", value);
+    if (names["length"].as<size_t>() != count + 1 ||
+        object.call<val>("getOwnPropertySymbols", value)["length"].as<size_t>() != 0)
+        throw std::invalid_argument("Sparse or decorated arrays are unsupported");
+    for (size_t i = 0; i < count; ++i) {
+        const auto descriptor = object.call<val>("getOwnPropertyDescriptor", value, val(std::to_string(i)));
+        if (descriptor.isUndefined() || !object.call<bool>("hasOwn", descriptor, val("value")) ||
+            !descriptor["enumerable"].as<bool>()) throw std::invalid_argument("Sparse or accessor arrays are unsupported");
+    }
+    return count;
+}
+
+static void validate_union_descriptor(const property_descriptor& property) {
+    if (!property.is_union || property.kind != property_kind::union_type || property.type != column_type::text ||
+        !property.nullable || property.target_table != property.union_desc.union_table_name ||
+        property.is_vector || property.is_full_text || property.is_indexed || property.no_history)
+        throw std::invalid_argument("Unsupported union property descriptor");
+    require_identifier(property.name);
+    require_identifier(property.target_table);
+    if (sqlite3_keyword_check(property.target_table.c_str(), static_cast<int>(property.target_table.size())))
+        throw std::invalid_argument("Union storage names cannot be SQL keywords");
+    if (property.union_desc.cases.empty() || property.union_desc.cases.size() > 128)
+        throw std::invalid_argument("Union requires a bounded nonempty case list");
+    std::unordered_set<std::string> cases;
+    std::unordered_set<std::string> columns{"id", "globalid", "case"};
+    for (const auto& item : property.union_desc.cases) {
+        require_identifier(item.case_name);
+        if (!cases.insert(item.case_name).second || item.values.size() > 64)
+            throw std::invalid_argument("Duplicate union case or too many fields");
+        std::unordered_set<std::string> keys;
+        for (size_t i = 0; i < item.values.size(); ++i) {
+            const auto& field = item.values[i];
+            if (field.is_link || !field.link_target.empty() ||
+                (field.type != column_type::text && field.type != column_type::integer))
+                throw std::invalid_argument("Only text and Int64 union fields are supported");
+            if (field.param_name.empty() && item.values.size() != 1)
+                throw std::invalid_argument("Multiple union values require explicit labels");
+            if (!field.param_name.empty()) require_identifier(field.param_name);
+            const auto key = field.param_name.empty() ? "_0" : field.param_name;
+            const auto column = field.param_name.empty() ? item.case_name : item.case_name + "__" + key;
+            require_identifier(column);
+            if (sqlite3_keyword_check(column.c_str(), static_cast<int>(column.size())))
+                throw std::invalid_argument("Union value column cannot be a SQL keyword");
+            if (!keys.insert(key).second || !columns.insert(storage_name(column)).second)
+                throw std::invalid_argument("Union fields collide in physical storage");
+        }
+    }
+}
+
+static property_descriptor union_property(dynamic_object_ref* ref, const std::string& name) {
+    if (!ref || !ref->valid()) throw std::invalid_argument("Invalid native object");
+    const auto* descriptor = ref->get()->get_property_descriptor(name);
+    if (!descriptor) throw std::invalid_argument("Unknown union property");
+    auto result = *descriptor;
+    validate_union_descriptor(result);
+    return result;
+}
+
+static const union_case& union_case_for(const property_descriptor& property, const std::string& name) {
+    for (const auto& item : property.union_desc.cases) if (item.case_name == name) return item;
+    throw std::invalid_argument("Unknown union case");
+}
+
+val JsDynamicObject::getUnion(const std::string& name) const {
+    const auto property = union_property(ref_, name);
+    const auto stored = checked_object_call(ref_, [&] { return ref_->get_union(name); }, false);
+    if (stored.case_name.empty()) {
+        if (ref_->get()->lattice && hasValue(name) && !getString(name).empty())
+            throw std::runtime_error("Union reference has no readable value");
+        return val::null();
+    }
+    const auto& active = union_case_for(property, stored.case_name);
+    if (stored.all_keys().size() != active.values.size()) throw std::runtime_error("Stored union fields do not match its active case");
+    val fields = val::object();
+    for (const auto& field : active.values) {
+        const auto key = field.param_name.empty() ? "_0" : field.param_name;
+        if (field.type == column_type::text && stored.has_string(key)) fields.set(key, stored.get_string(key));
+        else if (field.type == column_type::integer && stored.has_int(key)) fields.set(key, stored.get_int(key));
+        else throw std::runtime_error("Missing or mistyped stored union field");
+    }
+    val result = val::object();
+    result.set("case", stored.case_name);
+    result.set("fields", fields);
+    return result;
+}
+
+void JsDynamicObject::setUnion(const std::string& name, const val& value) {
+    const auto property = union_property(ref_, name);
+    union_value stored;
+    if (!value.isNull()) {
+        static const std::unordered_set<std::string> allowed{"case", "fields"};
+        if (record_fields(value, &allowed).size() != 2 || !value["case"].isString())
+            throw std::invalid_argument("Union value requires case and fields");
+        stored.case_name = value["case"].as<std::string>();
+        const auto& active = union_case_for(property, stored.case_name);
+        const auto fields = value["fields"];
+        auto names = record_fields(fields);
+        if (names.size() != active.values.size()) throw std::invalid_argument("Union fields must match the active case exactly");
+        for (const auto& field : active.values) {
+            const auto key = field.param_name.empty() ? "_0" : field.param_name;
+            if (std::find(names.begin(), names.end(), key) == names.end()) throw std::invalid_argument("Missing union field");
+            const auto item = fields[key];
+            if (field.type == column_type::text && item.isString()) stored.set_string(key, item.as<std::string>());
+            else if (field.type == column_type::integer && item.typeOf().as<std::string>() == "bigint" &&
+                val::global("BigInt").call<val>("asIntN", 64, item).strictlyEquals(item)) stored.set_int(key, item.as<int64_t>());
+            else throw std::invalid_argument("Union field requires text or an exact signed Int64 BigInt");
+        }
+    }
+    checked_object_call(ref_, [&] { ref_->set_union(name, stored); }, false);
+}
+
 property_descriptor js_to_property_descriptor(const val& prop) {
     property_descriptor desc;
+
+    // Silently dropping storage policy or treating a future kind as text can
+    // migrate an existing file to the wrong schema. Refuse before Core opens it.
+    static const std::unordered_set<std::string> supported_fields = {
+        "name", "type", "kind", "targetTable", "nullable", "isVector", "isFullText", "isIndexed", "logicalNullable", "unionCases", "noHistory"
+    };
+    record_fields(prop, &supported_fields);
+    if (!prop["name"].isString()) throw std::invalid_argument("Property name requires a string");
     desc.name = prop["name"].as<std::string>();
+    const std::string kind_str = prop["kind"].isUndefined() ? "primitive" : prop["kind"].as<std::string>();
+    if (kind_str == "link") desc.kind = property_kind::link;
+    else if (kind_str == "list") desc.kind = property_kind::list;
+    else if (kind_str == "primitive") desc.kind = property_kind::primitive;
+    else if (kind_str == "union") desc.kind = property_kind::union_type;
+    else throw std::invalid_argument("Unsupported property kind: " + kind_str);
 
     std::string type_str = prop["type"].as<std::string>();
     if (type_str == "string") desc.type = column_type::text;
@@ -830,18 +1167,57 @@ property_descriptor js_to_property_descriptor(const val& prop) {
     else if (type_str == "date") desc.type = column_type::real;  // Dates stored as Unix timestamps
     else if (type_str == "bool" || type_str == "boolean") desc.type = column_type::integer;
     else if (type_str == "blob" || type_str == "data") desc.type = column_type::blob;
-    else desc.type = column_type::text;
+    // Preserve the legacy relationship descriptor spelling; it is never a
+    // supported primitive scalar and relationship tables remain Core-owned.
+    else if (type_str == "object" && (kind_str == "link" || kind_str == "list")) desc.type = column_type::text;
+    else throw std::invalid_argument("Unsupported property type: " + type_str);
 
-    std::string kind_str = prop["kind"].isUndefined() ? "primitive" : prop["kind"].as<std::string>();
-    if (kind_str == "link") desc.kind = property_kind::link;
-    else if (kind_str == "list") desc.kind = property_kind::list;
-    else desc.kind = property_kind::primitive;
-
+    for (const auto* flag : {"nullable", "isVector", "isFullText", "isIndexed", "noHistory"}) {
+        if (!prop[flag].isUndefined() && prop[flag].typeOf().as<std::string>() != "boolean")
+            throw std::invalid_argument("Property flags require boolean values");
+    }
     desc.target_table = prop["targetTable"].isUndefined() ? "" : prop["targetTable"].as<std::string>();
     desc.nullable = prop["nullable"].isUndefined() ? true : prop["nullable"].as<bool>();
     desc.is_vector = prop["isVector"].isUndefined() ? false : prop["isVector"].as<bool>();
     desc.is_full_text = prop["isFullText"].isUndefined() ? false : prop["isFullText"].as<bool>();
     desc.is_indexed = prop["isIndexed"].isUndefined() ? false : prop["isIndexed"].as<bool>();
+    if (val::global("Object").call<bool>("hasOwn", prop, val("noHistory")) &&
+        (kind_str != "primitive" || prop["noHistory"].typeOf().as<std::string>() != "boolean"))
+        throw std::invalid_argument("noHistory requires a primitive property and boolean flag");
+    desc.no_history = prop["noHistory"].isUndefined() ? false : prop["noHistory"].as<bool>();
+
+    if (kind_str == "union") {
+        record_fields(prop, &supported_fields);
+        if (prop["logicalNullable"].typeOf().as<std::string>() != "boolean" ||
+            prop["nullable"].typeOf().as<std::string>() != "boolean" || type_str != "string")
+            throw std::invalid_argument("Union requires explicit physical and logical nullability");
+        desc.is_union = true;
+        desc.union_desc.union_table_name = desc.target_table;
+        const auto cases = prop["unionCases"];
+        const auto count = bounded_array(cases, 128);
+        static const std::unordered_set<std::string> case_fields{"name", "values"};
+        static const std::unordered_set<std::string> value_fields{"paramName", "type"};
+        for (size_t i = 0; i < count; ++i) {
+            const auto item = cases[i];
+            if (record_fields(item, &case_fields).size() != 2 || !item["name"].isString()) throw std::invalid_argument("Invalid union case descriptor");
+            union_case active;
+            active.case_name = item["name"].as<std::string>();
+            const auto values = item["values"];
+            const auto value_count = bounded_array(values, 64);
+            for (size_t j = 0; j < value_count; ++j) {
+                const auto field = values[j];
+                if (record_fields(field, &value_fields).size() != 2 || !field["paramName"].isString() || !field["type"].isString())
+                    throw std::invalid_argument("Invalid union field descriptor");
+                const auto type = field["type"].as<std::string>();
+                if (type != "string" && type != "int") throw std::invalid_argument("Unsupported union field type");
+                active.values.push_back({field["paramName"].as<std::string>(), type == "string" ? column_type::text : column_type::integer, false, ""});
+            }
+            desc.union_desc.cases.push_back(std::move(active));
+        }
+        validate_union_descriptor(desc);
+    } else if (!prop["logicalNullable"].isUndefined() || !prop["unionCases"].isUndefined()) {
+        throw std::invalid_argument("Union metadata requires a union property");
+    }
 
     return desc;
 }
@@ -852,17 +1228,35 @@ property_descriptor js_to_property_descriptor(const val& prop) {
 
 SchemaVector js_to_schema_vector(const val& schemas) {
     SchemaVector result;
+    std::unordered_set<std::string> tables;
+    std::unordered_map<std::string, std::string> union_signatures;
 
-    auto length = schemas["length"].as<size_t>();
+    auto length = bounded_array(schemas, 512);
     for (size_t i = 0; i < length; i++) {
         val schema = schemas[i];
         swift_schema_entry entry;
         entry.table_name = schema["tableName"].as<std::string>();
+        if (!tables.insert(storage_name(entry.table_name)).second) throw std::invalid_argument("Duplicate model table");
 
         val props = schema["properties"];
-        auto props_length = props["length"].as<size_t>();
+        auto props_length = bounded_array(props, 512);
+        std::unordered_set<std::string> physical_properties{"id", "globalid"};
         for (size_t j = 0; j < props_length; j++) {
             auto desc = js_to_property_descriptor(props[j]);
+            if (!physical_properties.insert(storage_name(desc.name)).second)
+                throw std::invalid_argument("Duplicate model property");
+            if (desc.is_union) {
+                nlohmann::json signature = nlohmann::json::array();
+                for (const auto& active : desc.union_desc.cases) {
+                    nlohmann::json fields = nlohmann::json::array();
+                    for (const auto& field : active.values) fields.push_back({field.param_name, static_cast<int>(field.type)});
+                    signature.push_back({active.case_name, fields});
+                }
+                const auto name = storage_name(desc.target_table);
+                const auto encoded = desc.target_table + ":" + signature.dump();
+                auto [found, inserted] = union_signatures.emplace(name, encoded);
+                if (!inserted && found->second != encoded) throw std::invalid_argument("Conflicting shared union table descriptors");
+            }
             entry.properties[desc.name] = desc;
         }
 
@@ -884,6 +1278,10 @@ SchemaVector js_to_schema_vector(const val& schemas) {
         }
 
         result.push_back(entry);
+    }
+
+    for (const auto& [name, signature] : union_signatures) {
+        if (tables.count(name)) throw std::invalid_argument("Union table collides with a model table");
     }
 
     return result;
@@ -1048,15 +1446,41 @@ val dynamic_object_ref_to_js(dynamic_object_ref* obj, const SwiftSchema* schema)
 // ============================================================================
 
 // Helper to throw JS Error from C++ exception
-void throw_js_error(const std::string& msg) {
+[[noreturn]] void throw_js_error(const std::string& msg) {
     val error = val::global("Error").new_(msg);
     throw error;
 }
 
 class JsLattice {
     bool owns_reference_ = false;
+    bool audit_only_ = false;
     std::unordered_set<uint64_t> socket_listener_ids_;
     inline static std::map<lattice::swift_lattice*, size_t> native_holders_;
+
+    static std::string admission_path(const std::string& path) {
+        auto result = val::take_ownership(lattice_path_identity(path.c_str()));
+        if (!result["ok"].as<bool>()) throw std::runtime_error("Cannot determine sync admission store identity");
+        return result["path"].as<std::string>();
+    }
+    static void require_exclusive_admission(const std::string& path, bool incoming_admitted) {
+        const bool incoming_uri = path.rfind("file:", 0) == 0;
+        if (incoming_admitted && incoming_uri) {
+            throw std::runtime_error("Admitted sync does not support SQLite file: URI paths; use an ordinary store path");
+        }
+        const auto identity = admission_path(path);
+        for (const auto& [native, count] : native_holders_) {
+            auto owner = std::dynamic_pointer_cast<emscripten_scheduler>(native->get_scheduler());
+            const bool existing_admitted = owner && owner->has_admission();
+            if ((incoming_admitted && native->config().path.rfind("file:", 0) == 0) ||
+                (existing_admitted && incoming_uri)) {
+                throw std::runtime_error("Cannot mix admitted owners and SQLite file: URI owners; close the existing owner first");
+            }
+            if ((incoming_admitted || existing_admitted) &&
+                admission_path(native->config().path) == identity) {
+                throw std::runtime_error("Sync admission requires one live Lattice owner per store path; close the existing owner first");
+            }
+        }
+    }
 
     void own_reference() {
         retainSwiftLatticeRef(ref_);
@@ -1100,6 +1524,8 @@ class JsLattice {
     }
 
 public:
+    static void assertRestoreAllowed(const std::string& path) { require_exclusive_admission(path, false); }
+
     static val lifecycleDiagnostics() {
         val result = val::object();
         result.set("nativeOwners", val(static_cast<unsigned>(native_holders_.size())));
@@ -1132,6 +1558,8 @@ public:
             throw_js_error("arity-3 Lattice constructor is the read-only audit open; pass true");
         }
         try {
+            require_exclusive_admission(path, false);
+            audit_only_ = true;
             swift_configuration config;
             config.path = path;
             config.sched = std::make_shared<emscripten_scheduler>();
@@ -1144,42 +1572,36 @@ public:
         }
     }
 
-    // Constructor with sync configuration
+    // Legacy constructors retain bearer-token-required sync and existing sharing.
     JsLattice(const std::string& path, const val& schemas,
-              const std::string& websocket_url, const std::string& auth_token) {
-        try {
-            if (!websocket_url.empty()) {
-                init_emscripten_network();
-            }
-
-            configuration config(path, std::make_shared<emscripten_scheduler>());
-
-            if (!websocket_url.empty()) {
-                config.websocket_url = websocket_url;
-                config.authorization_token = auth_token;
-            }
-
-            auto schema_vec = js_to_schema_vector(schemas);
-            ref_ = swift_lattice_ref::create(config, schema_vec);
-            own_reference();
-        } catch (const std::exception& e) {
-            throw_js_error(std::string("Failed to open database: ") + e.what());
-        } catch (...) {
-            throw_js_error("Failed to open database: unknown error");
-        }
-    }
+              const std::string& websocket_url, const std::string& auth_token)
+        : JsLattice(path, schemas, websocket_url, auth_token, 0, val::null(), val::null()) {}
 
     // Constructor with migration support
     JsLattice(const std::string& path, const val& schemas,
               const std::string& websocket_url, const std::string& auth_token,
-              int32_t schema_version, val migration_callback) {
+              int32_t schema_version, val migration_callback)
+        : JsLattice(path, schemas, websocket_url, auth_token, schema_version, std::move(migration_callback), val::null()) {}
+
+    // Internal admitted open is reachable only through the tagged factory below.
+    JsLattice(const std::string& path, const val& schemas,
+              const std::string& websocket_url, const std::string& auth_token,
+              int32_t schema_version, val migration_callback, val socket_factory) {
         try {
+            const bool admitted = !socket_factory.isNull() && !socket_factory.isUndefined();
+            if (admitted && (socket_factory.typeOf().as<std::string>() != "function" ||
+                websocket_url.empty() || !auth_token.empty())) {
+                throw std::runtime_error("Admitted sync requires a callable factory, endpoint, and empty bearer token");
+            }
+            require_exclusive_admission(path, admitted);
             if (!websocket_url.empty()) {
                 init_emscripten_network();
             }
 
-            configuration config(path, std::make_shared<emscripten_scheduler>());
-            config.target_schema_version = schema_version;
+            configuration config(path, admitted ? std::make_shared<emscripten_scheduler>(std::move(socket_factory)) :
+                std::make_shared<emscripten_scheduler>());
+            if (schema_version > 0) config.target_schema_version = schema_version;
+            if (admitted) config.sync_authentication_mode = sync_authentication::transport_managed;
 
             if (!websocket_url.empty()) {
                 config.websocket_url = websocket_url;
@@ -1190,8 +1612,9 @@ public:
 
             if (!migration_callback.isNull() && !migration_callback.isUndefined()) {
                 // Use create_with_migration
-                auto* stored_callback = new val(migration_callback);
+                auto stored_callback = std::make_shared<val>(migration_callback);
                 swift_migration_block_t block = [stored_callback](swift_migration_context_ref* ctx) {
+                    ActiveMigration active(ctx);
                     // Convert swift_migration_context_ref to JS object
                     val js_ctx = val::object();
 
@@ -1214,19 +1637,17 @@ public:
                     }
                     js_ctx.set("pendingChanges", js_changes);
 
-                    // hasChangesFor(tableName)
-                    js_ctx.set("hasChangesFor", val::module_property("_migration_has_changes_for"));
-
                     // renameProperty(tableName, old, new)
-                    js_ctx.set("_ctx_ptr", val(reinterpret_cast<uintptr_t>(ctx)));
+                    // Preserve the internal JS field name; the value is an expiring token, not a pointer.
+                    js_ctx.set("_ctx_ptr", val(active.token));
                     js_ctx.set("renameProperty", val::module_property("_migration_rename_property"));
                     js_ctx.set("deleteAll", val::module_property("_migration_delete_all"));
                     js_ctx.set("executeSql", val::module_property("_migration_execute_sql"));
 
-                    (*stored_callback)(js_ctx);
+                    auto result = val::take_ownership(lattice_call_migration_js(stored_callback->as_handle(), js_ctx.as_handle()));
+                    if (!result["ok"].as<bool>()) throw std::runtime_error(result["error"].as<std::string>());
                 };
                 ref_ = swift_lattice_ref::create_with_migration(config, schema_vec, block);
-                delete stored_callback;
             } else {
                 ref_ = swift_lattice_ref::create(config, schema_vec);
             }
@@ -1320,14 +1741,115 @@ public:
         return val::null();
     }
 
-    // Query objects from a table
+    // Parse/copy JS input before entering the callback-free native read. Convert
+    // the detached result only after capture_native has ended its read scope.
+    val captureValuesSync(const val& input) {
+        static const std::unordered_set<std::string> fields{"table", "properties", "maxRows"};
+        std::vector<lattice_js_capture::selector> selectors;
+        const auto count = bounded_array(input, lattice_js_capture::max_selectors);
+        auto name = [](const val& value) {
+            if (!value.isString() || value["length"].as<size_t>() > 128)
+                throw std::invalid_argument("Invalid capture identifier");
+            const auto copied = value.as<std::string>();
+            if (!lattice_js_capture::identifier(copied)) throw std::invalid_argument("Invalid capture identifier");
+            return copied;
+        };
+        for (size_t i = 0; i < count; ++i) {
+            const auto selector = input[i];
+            record_fields(selector, &fields);
+            lattice_js_capture::selector copied;
+            copied.table = name(selector["table"]);
+            const auto properties = selector["properties"];
+            const auto property_count = bounded_array(properties, lattice_js_capture::max_properties);
+            for (size_t j = 0; j < property_count; ++j) copied.properties.push_back(name(properties[j]));
+            if (!selector["maxRows"].isUndefined()) {
+                const auto limit = selector["maxRows"];
+                if (limit.typeOf().as<std::string>() != "number") throw std::invalid_argument("Invalid capture maxRows");
+                const auto number = limit.as<double>();
+                if (!std::isfinite(number) || std::floor(number) != number || number < 1 || number > lattice_js_capture::max_rows)
+                    throw std::invalid_argument("Invalid capture maxRows");
+                copied.max_rows = static_cast<size_t>(number);
+            }
+            selectors.push_back(std::move(copied));
+        }
+        if (!ref_) throw std::runtime_error("Capture requires an open database");
+        const auto detached = lattice_js_capture::capture_native(swift_lattice_ref::shared_for_lattice(ref_->get()), selectors);
+        // Stream only the closed packet containers. Reuse the pinned nlohmann
+        // 3.11.3 serializer with exactly json::dump()'s compact defaults; it
+        // still owns UTF-8 validation/escaping and floating-point formatting.
+        // A temporary scalar is released after each write, so there is no
+        // second row/value/blob JSON tree beside the admitted detached copy.
+        std::string packet = "{\"formatVersion\":1,\"rows\":[";
+        nlohmann::detail::serializer<nlohmann::json> writer(
+            nlohmann::detail::output_adapter<char>(packet), ' ',
+            nlohmann::detail::error_handler_t::strict);
+        auto scalar = [&](const auto& value) {
+            writer.dump(nlohmann::json(value), false, false, 0);
+        };
+        bool first_row = true;
+        for (const auto& row : detached.rows) {
+            if (!first_row) packet += ',';
+            first_row = false;
+            // Preserve the prior JSON object's lexicographic key order.
+            packet += "{\"globalId\":"; scalar(row.global_id);
+            packet += ",\"table\":"; scalar(row.table);
+            packet += ",\"values\":{";
+            bool first_cell = true;
+            for (const auto& [key, cell] : row.values) {
+                if (!first_cell) packet += ',';
+                first_cell = false;
+                scalar(key); packet += ':';
+                std::visit([&](const auto& value) {
+                    using T = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<T, int64_t>) {
+                        packet += "{\"$latticeInt64\":";
+                        scalar(std::to_string(value)); packet += '}';
+                    } else if constexpr (std::is_same_v<T, lattice_js_capture::link>) {
+                        packet += "{\"globalId\":"; scalar(value.global_id);
+                        packet += ",\"table\":"; scalar(value.table); packet += '}';
+                    } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+                        packet += '[';
+                        bool first_byte = true;
+                        for (const auto byte : value) {
+                            if (!first_byte) packet += ',';
+                            first_byte = false;
+                            scalar(byte);
+                        }
+                        packet += ']';
+                    } else scalar(value);
+                }, cell);
+            }
+            packet += "}}";
+        }
+        packet += "]}";
+        const auto decoded = val::take_ownership(lattice_decode_capture_packet(packet.c_str()));
+        if (!decoded["ok"].as<bool>()) throw std::runtime_error("Detached capture packet decode failed");
+        return decoded["value"];
+    }
+
+    // Explicit-model callers hydrate managed rows by identity. They must not
+    // recursively materialize linked graphs through the legacy plain converter.
+    val objectIdentities(const std::string& table_name,
+                         const val& where, const val& order, const val& limit,
+                         const val& offset, const val& group, const val& distinct) {
+        return queryObjects(table_name, where, order, limit, offset, group, distinct, true);
+    }
+
     val objects(const std::string& table_name,
+                const val& where, const val& order, const val& limit,
+                const val& offset, const val& group, const val& distinct) {
+        return queryObjects(table_name, where, order, limit, offset, group, distinct, false);
+    }
+
+    // Query objects from a table; identity-only results never touch linked rows.
+    val queryObjects(const std::string& table_name,
                 const val& where_clause,
                 const val& order_by,
                 const val& limit,
                 const val& offset,
                 const val& group_by,
-                const val& distinct_by) {
+                const val& distinct_by,
+                bool identities_only) {
         try {
             OptionalString where = where_clause.isNull() || where_clause.isUndefined()
                 ? std::nullopt : std::optional<std::string>(where_clause.as<std::string>());
@@ -1347,12 +1869,14 @@ public:
 
             val arr = val::array();
             for (size_t i = 0; i < results.size(); i++) {
-                auto* obj_ref = new dynamic_object_ref(results[i]);
-                val js_obj = dynamic_object_to_js(obj_ref, schema);
+                val js_obj = val::object();
+                if (!identities_only) {
+                    auto obj_ref = std::make_unique<dynamic_object_ref>(results[i]);
+                    js_obj = dynamic_object_to_js(obj_ref.get(), schema);
+                }
                 js_obj.set("id", results[i].id());
                 js_obj.set("globalId", results[i].global_id());
                 arr.call<void>("push", js_obj);
-                delete obj_ref;
             }
             return arr;
         } catch (const std::exception& e) {
@@ -1566,42 +2090,121 @@ public:
     // sibling relay applied — has no such mark. So: unsynced AND unmarked.
     // Downloads excluded, local writes + second-generation rescues included,
     // no reliance on isFromRemote heuristics.
+    std::vector<std::pair<int64_t, std::string>> unshippedAuditIdentities(bool local_only) {
+        if (!ref_) throw std::runtime_error("Lattice has been released");
+        auto& db = ref_->get()->db();
+        constexpr size_t max_entries = 4096, max_bytes = 16 * 1024 * 1024;
+        // Bound the selected identities before materializing any payload or
+        // running its late binder. Never load the store's complete history.
+        std::string sql = "SELECT a.id, a.globalId, "
+            "length(CAST(a.changedFields AS BLOB)) + length(CAST(a.changedFieldsNames AS BLOB)) + "
+            "length(CAST(a.globalId AS BLOB)) + length(CAST(a.tableName AS BLOB)) + "
+            "length(CAST(a.globalRowId AS BLOB)) + length(CAST(a.timestamp AS BLOB)) + 256 AS rawBytes "
+            "FROM AuditLog a WHERE a.isSynchronized=0";
+        if (db.table_exists("_lattice_sync_state")) sql +=
+            " AND NOT EXISTS(SELECT 1 FROM _lattice_sync_state s WHERE s.audit_entry_id=a.id AND s.is_synchronized=1)";
+        if (local_only) sql += " AND a.isFromRemote=0";
+        sql += " ORDER BY a.id ASC LIMIT 4097";
+        const auto rows = db.query(sql, {});
+        if (rows.size() > max_entries) throw std::runtime_error("Pending audit aggregate row limit exceeded");
+        std::vector<std::pair<int64_t, std::string>> identities;
+        size_t bytes = 0;
+        for (const auto& row : rows) {
+            const auto raw_bytes = std::get<int64_t>(row.at("rawBytes"));
+            if (raw_bytes < 0 || static_cast<uint64_t>(raw_bytes) > max_bytes - bytes) {
+                throw std::runtime_error("Pending audit aggregate byte limit exceeded");
+            }
+            bytes += static_cast<size_t>(raw_bytes);
+            identities.emplace_back(std::get<int64_t>(row.at("id")), std::get<std::string>(row.at("globalId")));
+        }
+        return identities;
+    }
+
     std::string getUnshippedAuditLog() {
         try {
-            auto& db = ref_->get()->db();
-            std::unordered_set<int64_t> acked;
-            if (db.table_exists("_lattice_sync_state")) {
-                auto rows = db.query(
-                    "SELECT DISTINCT audit_entry_id FROM _lattice_sync_state "
-                    "WHERE is_synchronized = 1", {});
-                for (const auto& row : rows) {
-                    auto it = row.find("audit_entry_id");
-                    if (it != row.end() && std::holds_alternative<int64_t>(it->second)) {
-                        acked.insert(std::get<int64_t>(it->second));
-                    }
-                }
-            }
-            // only_unsynced=true would ALSO filter isFromRemote=0 in core —
-            // silently dropping rows a drain or sibling relay applied
-            // (isFromRemote=1, unsynced, unmarked), i.e. making a
-            // second-generation rescue lossy. Take every row and apply the
-            // documented predicate ourselves: unsynced AND unmarked.
-            auto entries = query_audit_log(db, false /*all rows*/, std::nullopt);
+            const auto frames = getUnshippedAuditFrames(false, 1000);
             std::string json = "[";
-            bool first = true;
-            for (const auto& entry : entries) {
-                if (entry.is_synchronized) continue;
-                if (acked.count(entry.id)) continue;
-                if (!first) json += ",";
-                first = false;
-                json += entry.to_json();
+            const size_t count = frames["length"].as<size_t>();
+            for (size_t i = 0; i < count; ++i) {
+                const auto raw = frames[i]["json"].as<std::string>();
+                if (i) json += ",";
+                json.append(raw, 1, raw.size() - 2);
             }
-            json += "]";
-            return json;
+            return json + "]";
         } catch (const std::exception& e) {
             printf("[getUnshippedAuditLog] Error: %s\n", e.what());
             return "[]";
         }
+    }
+
+    // Payloads remain native-owned JSON strings. JS sees only identity metadata
+    // and must not parse/re-encode the Int64-valued audit envelope.
+    val getUnshippedAuditFrames(bool local_only, int32_t max_entries) {
+        if (max_entries < 1 || max_entries > 1000) throw std::invalid_argument("maxEntries must be between 1 and 1000");
+        constexpr size_t max_bytes = 8 * 1024 * 1024;
+        const auto selected = unshippedAuditIdentities(local_only);
+        val frames = val::array(), metadata = val::array();
+        std::string json = "[";
+        size_t count = 0, total_bytes = 0;
+        auto flush = [&] {
+            if (!count) return;
+            val frame = val::object();
+            frame.set("formatVersion", 1);
+            frame.set("entries", metadata);
+            frame.set("json", json + "]");
+            frames.call<void>("push", frame);
+            metadata = val::array(); json = "["; count = 0;
+        };
+        for (const auto& identity : selected) {
+            // Decode/late-bind one entry at a time. A shared large NoHistory
+            // cache must not multiply across thousands of retained rows before
+            // we can enforce the aggregate serialized budget. Core also bounds
+            // each selected read's raw and expanded values before publication.
+            if (total_bytes + 2 >= 16 * 1024 * 1024) throw std::runtime_error("Pending audit aggregate byte limit exceeded");
+            const auto entries = query_audit_log_selected(ref_->get()->db(), {identity}, 16 * 1024 * 1024 - total_bytes - 2);
+            if (entries.size() != 1) throw std::runtime_error("Pending audit identity disappeared");
+            const auto& entry = entries.front();
+            const auto raw = entry.to_json();
+            if (raw.size() + 2 > 16 * 1024 * 1024 - total_bytes) throw std::runtime_error("Pending audit aggregate byte limit exceeded");
+            total_bytes += raw.size() + 2;
+            if (raw.size() + 2 > max_bytes) throw std::runtime_error("Pending audit entry exceeds frame byte limit");
+            if (count && (count >= static_cast<size_t>(max_entries) || json.size() + raw.size() + 2 > max_bytes)) flush();
+            if (count) json += ",";
+            json += raw;
+            val metadata_entry = val::object();
+            metadata_entry.set("globalId", entry.global_id); metadata_entry.set("tableName", entry.table_name);
+            metadata.call<void>("push", metadata_entry);
+            ++count;
+        }
+        flush();
+        return frames;
+    }
+
+    val importPendingFrame(const std::string& frame) {
+        if (!ref_ || audit_only_) throw std::runtime_error("Writable Lattice required for pending import");
+        if (frame.size() > 8 * 1024 * 1024) throw std::invalid_argument("Pending frame exceeds byte limit");
+        const auto raw = nlohmann::json::parse(frame);
+        if (!raw.is_array() || raw.empty() || raw.size() > 1000) throw std::invalid_argument("Pending frame must contain 1 to 1000 entries");
+        std::vector<audit_log_entry> entries;
+        std::unordered_set<std::string> ids;
+        for (const auto& value : raw) {
+            const auto entry = audit_log_entry::from_json(value.dump());
+            if (!entry || entry->global_id.empty() || !ids.insert(entry->global_id).second) {
+                throw std::invalid_argument("Invalid or duplicate pending frame entry");
+            }
+            entries.push_back(*entry);
+        }
+        const auto imported = apply_pending_changes(*ref_->get(), entries);
+        auto strings = [](const std::vector<std::string>& values) {
+            val output = val::array();
+            for (const auto& value : values) output.call<void>("push", value);
+            return output;
+        };
+        val result = val::object();
+        result.set("imported", strings(imported.imported_ids));
+        result.set("alreadyPresent", strings(imported.already_present_ids));
+        result.set("rejected", strings(imported.rejected_ids));
+        return result;
     }
 
     // Exact native owner identity, including cache reuse. No URL guessing or
@@ -1629,6 +2232,19 @@ public:
     void requestSyncUpload() {
         if (!ref_) throw_js_error("Lattice has been released");
         ref_->get()->sync_now();
+    }
+
+    // These two operations deliberately do not retire observers, shut down the
+    // scheduler, release storage or evict its cache. JavaScript must establish
+    // physical WebSocket closure between them on a later browser task.
+    void disconnectSync() {
+        require_exclusive_sync_owner();
+        ref_->get()->disconnect_sync();
+    }
+
+    void connectSync() {
+        require_exclusive_sync_owner();
+        ref_->get()->connect_sync();
     }
 
     // Stop incoming work on the final owner while retaining SQLite for the
@@ -1687,88 +2303,24 @@ public:
         }
     }
 
-    // Apply remote changes from JSON (audit log entries)
-    // Returns JSON array of global IDs that were applied
+    // Compatibility pending-import entry point. Historically this method
+    // journalled unsynchronized relayed rows; it is not server receive. Keep
+    // its array/[] result shape while sharing Core's guarded pending path.
     std::string applyRemoteChanges(const std::string& json) {
         try {
-            // Parse JSON array of audit log entries
-            auto j = nlohmann::json::parse(json);
-            if (!j.is_array()) {
-                printf("[applyRemoteChanges] Expected JSON array\n");
-                return "[]";
+            const auto result = importPendingFrame(json);
+            nlohmann::json accepted = nlohmann::json::array();
+            for (const auto* name : {"imported", "alreadyPresent"}) {
+                const auto ids = result[name];
+                const size_t count = ids["length"].as<size_t>();
+                for (size_t i = 0; i < count; ++i) accepted.push_back(ids[i].as<std::string>());
             }
-
-            std::vector<std::string> applied_ids;
-            std::vector<audit_log_entry> entries_to_record;
-
-            // Disable sync triggers while applying remote changes
-            // (we'll manually insert AuditLog entries with isFromRemote=1)
-            ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 1 WHERE id = 1");
-
-            for (const auto& entry_json : j) {
-                auto entry = audit_log_entry::from_json(entry_json.dump());
-                if (!entry) {
-                    printf("[applyRemoteChanges] Failed to parse entry\n");
-                    continue;
-                }
-
-                // Get schema for table to handle BLOB columns
-                const auto* props = ref_->get()->get_properties_for_table(entry->table_name);
-                std::unordered_map<std::string, column_type> schema;
-                if (props) {
-                    for (const auto& [name, desc] : *props) {
-                        schema[name] = desc.type;
-                    }
-                }
-
-                // Generate and execute the SQL instruction
-                auto [sql, params] = entry->generate_instruction(schema);
-                if (!sql.empty()) {
-                    try {
-                        ref_->get()->db().execute(sql, params);
-                        applied_ids.push_back(entry->global_id);
-                        entries_to_record.push_back(*entry);
-                    } catch (const std::exception& e) {
-                        char buf[1024];
-                        snprintf(buf, sizeof(buf), "applyRemoteChanges SQL FAILED: %s | SQL: %.500s | table: %s op: %s",
-                                 e.what(), sql.c_str(), entry->table_name.c_str(), entry->operation.c_str());
-                        debugLogToChannel(buf);
-                    }
-                }
-            }
-
-            // Re-enable sync triggers
-            ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 0 WHERE id = 1");
-
-            // Now manually insert AuditLog entries for applied changes
-            // Mark them as isFromRemote=1 so we don't re-broadcast them
-            for (const auto& entry : entries_to_record) {
-                try {
-                    ref_->get()->db().execute(
-                        "INSERT OR REPLACE INTO AuditLog "
-                        "(globalId, tableName, operation, rowId, globalRowId, changedFields, changedFieldsNames, timestamp, isFromRemote, isSynchronized) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)",
-                        {
-                            entry.global_id,
-                            entry.table_name,
-                            entry.operation,
-                            entry.row_id,
-                            entry.global_row_id,
-                            entry.changed_fields_to_json(),
-                            entry.changed_fields_names_to_json(),
-                            entry.timestamp
-                        }
-                    );
-                } catch (const std::exception& e) {
-                    printf("[applyRemoteChanges] Failed to record AuditLog entry: %s\n", e.what());
-                }
-            }
-
-            // Return applied IDs as JSON array
-            nlohmann::json result = applied_ids;
-            return result.dump();
-        } catch (const std::exception& e) {
-            printf("[applyRemoteChanges] Error: %s\n", e.what());
+            return accepted.dump();
+        } catch (const std::exception& error) {
+            printf("[applyRemoteChanges] Error: %s\n", error.what());
+            return "[]";
+        } catch (...) {
+            printf("[applyRemoteChanges] Unknown error\n");
             return "[]";
         }
     }
@@ -1796,74 +2348,21 @@ public:
     // Returns JSON array of applied global IDs
     std::string receive(const std::string& json) {
         try {
-            auto event = server_sent_event::from_json(json);
-            if (!event) return "[]";
-
-            std::vector<std::string> applied_ids;
-
-            if (event->event_type == server_sent_event::type::audit_log) {
-
-                // Disable sync triggers while applying
-                ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 1 WHERE id = 1");
-
-                for (const auto& entry : event->audit_logs) {
-                    // Skip if already in AuditLog (idempotent)
-                    auto existing = ref_->get()->db().query(
-                        "SELECT id FROM AuditLog WHERE globalId = ?",
-                        {entry.global_id}
-                    );
-                    if (!existing.empty()) continue;
-
-                    // Get schema for table
-                    const auto* props = ref_->get()->get_properties_for_table(entry.table_name);
-                    std::unordered_map<std::string, column_type> schema;
-                    if (props) {
-                        for (const auto& [name, desc] : *props) {
-                            schema[name] = desc.type;
-                        }
-                    }
-
-                    // Generate and execute SQL for data table
-                    auto [sql, params] = entry.generate_instruction(schema);
-                    if (!sql.empty()) {
-                        try {
-                            ref_->get()->db().execute(sql, params);
-
-                            // Record the audit entry as from remote (for eventsAfter queries)
-                            std::string insert_sql = R"(
-                                INSERT INTO AuditLog (globalId, tableName, operation, rowId, globalRowId,
-                                    changedFields, changedFieldsNames, timestamp, isFromRemote, isSynchronized)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
-                            )";
-                            ref_->get()->db().execute(insert_sql, {
-                                entry.global_id,
-                                entry.table_name,
-                                entry.operation,
-                                entry.row_id,
-                                entry.global_row_id,
-                                entry.changed_fields_to_json(),
-                                entry.changed_fields_names_to_json(),
-                                entry.timestamp
-                            });
-
-                            applied_ids.push_back(entry.global_id);
-                        } catch (const std::exception& e) {
-                        }
-                    }
-                }
-
-                // Re-enable sync triggers
-                ref_->get()->db().execute("UPDATE _SyncControl SET disabled = 0 WHERE id = 1");
-
-            } else if (event->event_type == server_sent_event::type::ack) {
-                mark_audit_entries_synced(*ref_->get(), event->acked_ids);
-                applied_ids = event->acked_ids;
+            if (!ref_) throw std::runtime_error("Lattice has been released");
+            // Core owns apply transactions, NoHistory/null guards, duplicate
+            // receipts and post-commit observation. ACK frames mark local
+            // entries synchronized and return no IDs: never ACK an ACK.
+            const ByteVector bytes(json.begin(), json.end());
+            const auto applied_ids = ref_->get()->receive_sync_data(bytes);
+            if (const auto error = ref_->get()->last_receive_error()) {
+                printf("[receive] Error: %s\n", error->c_str());
             }
-
-            nlohmann::json result = applied_ids;
-            return result.dump();
+            return nlohmann::json(applied_ids).dump();
         } catch (const std::exception& e) {
             printf("[receive] Error: %s\n", e.what());
+            return "[]";
+        } catch (...) {
+            printf("[receive] Unknown error\n");
             return "[]";
         }
     }
@@ -1911,47 +2410,25 @@ public:
                     if (!ctx->active) return;
                     auto owner = weak_owner.lock();
                     if (!owner || owner->is_closed()) return;
-                    std::string json = "[";
-                    bool any = false;
+                    std::vector<std::pair<int64_t, std::string>> identities;
                     for (const auto& [table, operation, row_id, global_id, fields] : batch) {
                         if (!ctx->active) return;
-                        if (operation != "INSERT") continue;
-                        // Notifications identify AuditLog rows, not model operations.
-                        // Match both stored identities before serializing the full row.
-                        auto rows = owner->db().query(
-                            "SELECT id, globalId, tableName, operation, rowId, globalRowId, "
-                            "changedFields, changedFieldsNames, CAST(timestamp AS TEXT) AS timestamp, isFromRemote, "
-                            "isSynchronized FROM AuditLog WHERE id = ? AND globalId = ?",
-                            {row_id, global_id});
-                        if (rows.size() != 1)
-                            throw std::runtime_error("Observed AuditLog row is no longer available");
-                        const auto& row = rows.front();
-                        auto text = [&row](const char* key) -> const std::string& {
-                            return std::get<std::string>(row.at(key));
-                        };
-                        auto integer = [&row](const char* key) -> int64_t {
-                            return std::get<int64_t>(row.at(key));
-                        };
-                        audit_log_entry entry;
-                        entry.id = integer("id");
-                        entry.global_id = text("globalId");
-                        entry.table_name = text("tableName");
-                        entry.operation = text("operation");
-                        entry.row_id = integer("rowId");
-                        entry.global_row_id = text("globalRowId");
-                        entry.changed_fields = audit_log_entry::parse_changed_fields(text("changedFields"));
-                        entry.changed_fields_names = audit_log_entry::parse_changed_fields_names(text("changedFieldsNames"));
-                        entry.timestamp = text("timestamp");
-                        entry.is_from_remote = integer("isFromRemote") != 0;
-                        entry.is_synchronized = integer("isSynchronized") != 0;
-                        if (any) json += ",";
-                        json += entry.to_json();
-                        any = true;
+                        if (operation == "INSERT") identities.emplace_back(row_id, global_id);
+                    }
+                    if (identities.empty()) return;
+                    // Selected Core-owned decoding includes synthesized and
+                    // the same NoHistory late binder used by native shippers.
+                    const auto entries = query_audit_log_selected(owner->db(), identities);
+                    std::string json = "[";
+                    for (size_t i = 0; i < entries.size(); ++i) {
+                        if (i) json += ",";
+                        json += entries[i].to_json();
+                        if (json.size() + 1 > 16 * 1024 * 1024) throw std::runtime_error("Observed audit aggregate byte limit exceeded");
                     }
                     json += "]";
                     // Missing or malformed rows fail before publication. This live
                     // API does not promise replay after audit history is pruned.
-                    if (any && ctx->active) {
+                    if (ctx->active) {
                         auto callback = ctx->callback;
                         callback(json);
                     }
@@ -2265,6 +2742,15 @@ public:
     }
 
 private:
+    void require_exclusive_sync_owner() const {
+        if (!ref_ || !owns_reference_ || audit_only_) throw_js_error("Live writable sync owner required");
+        const auto owner = owner_scheduler();
+        const auto holder = native_holders_.find(ref_->get());
+        if (!owner || !owner->can_invoke() || owner->socket().isNull()) throw_js_error("Sync owner is unavailable");
+        if (holder == native_holders_.end() || holder->second != 1) throw_js_error("Sync reconnect requires an exclusive native owner");
+        if (owner->executing()) throw_js_error("Sync reconnect requires a later browser task");
+    }
+
     swift_lattice_ref* ref_ = nullptr;
     // Core copies observer callbacks into queued batches. Shared contexts
     // keep those copies valid; retirement suppresses them without deleting
@@ -2455,8 +2941,107 @@ static void enable_shared_cache() {
     printf("[WASM] SQLite shared cache enabled globally\n");
 }
 
+// Keep versioned open failures inside C++ until all constructor, exception and
+// Embind argument owners can be released. JS throws only after this tagged result
+// has returned; raw C++ exception pointers never become the public error value.
+static val open_versioned_lattice(const std::string& path, const val& schemas,
+                                  const std::string& url, const std::string& token,
+                                  int32_t version, const val& callback) {
+    val result = val::object();
+    try {
+        auto db = std::make_shared<JsLattice>(path, schemas, url, token, version, callback);
+        result.set("db", db);
+        result.set("ok", true);
+    } catch (const val& error) {
+        // The legacy constructor translates std::exception to a C++-thrown JS
+        // Error value. Catch it here so its C++ exception allocation is freed.
+        result.set("ok", false);
+        result.set("error", error["message"].as<std::string>());
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    }
+    return result;
+}
+
+static val open_admitted_lattice(const std::string& path, const val& schemas,
+                                 const std::string& url, int32_t version,
+                                 const val& callback, const val& factory) {
+    val result = val::object();
+    try {
+        if (factory.typeOf().as<std::string>() != "function" || version < 0) {
+            throw std::runtime_error("Invalid admitted database open");
+        }
+        auto db = std::make_shared<JsLattice>(path, schemas, url, "", version, callback, factory);
+        result.set("db", db);
+        result.set("ok", true);
+    } catch (const val& error) {
+        result.set("ok", false);
+        result.set("error", error["message"].as<std::string>());
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    }
+    return result;
+}
+
+// Finish unwinding C++ owners and Embind arguments before throwing in JS. A
+// C++-thrown emscripten::val is otherwise exposed as a numeric exception pointer;
+// val.throw_() instead skips C++ cleanup. This tagged boundary avoids both.
+template <typename Operation>
+static val object_operation_result(Operation operation) {
+    val result = val::object();
+    try {
+        if constexpr (std::is_void_v<std::invoke_result_t<Operation>>) {
+            operation();
+        } else {
+            result.set("value", operation());
+        }
+        result.set("ok", true);
+    } catch (const val& error) {
+        result.set("ok", false);
+        result.set("error", error["message"].as<std::string>());
+    } catch (const std::exception& error) {
+        result.set("ok", false);
+        result.set("error", std::string(error.what()));
+    } catch (...) {
+        result.set("ok", false);
+        result.set("error", "Native object operation failed");
+    }
+    return result;
+}
+
+EM_JS(void, install_object_result_wrappers, (), {
+    function install(prototype, names) {
+        for (const name of names) {
+            const native = prototype['_result_' + name];
+            prototype[name] = function(...args) {
+                const result = native.apply(this, args);
+                if (!result.ok) throw new Error(result.error);
+                return result.value;
+            };
+        }
+    }
+    install(Module['DynamicObject'].prototype, [
+        'getInt', 'getString', 'getDouble', 'getBool', 'getData', 'hasValue',
+        'setInt', 'setString', 'setDouble', 'setBool', 'setData', 'setNil',
+        'getObject', 'setObject', 'getLinkList', 'getUnion', 'setUnion'
+    ]);
+    install(Module['Lattice'].prototype, ['addObject', 'objectIdentities', 'getUnshippedAuditFrames', 'importPendingFrame', 'captureValuesSync']);
+});
+
 EMSCRIPTEN_BINDINGS(lattice) {
+    function("explicitUnionVersion", optional_override([]() { return 1; }));
+    function("explicitNoHistoryVersion", optional_override([]() { return 1; }));
+    function("_migration_rename_property", &migration_rename_property);
+    function("_migration_delete_all", &migration_delete_all);
+    function("_migration_execute_sql", &migration_execute_sql);
     function("_lifecycleDiagnostics", &JsLattice::lifecycleDiagnostics);
+    // Read-only diagnostic for deterministic capture statement-budget tests.
+    // Kept separate from the fixed lifecycle diagnostic shape/public TS API.
+    function("_captureStatementCount", optional_override([]() {
+        return lattice::database::thread_statement_count();
+    }));
     // Version check
     function("getWasmVersion", &getWasmVersion);
 
@@ -2488,31 +3073,80 @@ EMSCRIPTEN_BINDINGS(lattice) {
     class_<JsDynamicObject>("DynamicObject")
         .constructor<>()
         .function("isValid", &JsDynamicObject::isValid)
-        .function("getInt", &JsDynamicObject::getInt)
-        .function("getString", &JsDynamicObject::getString)
-        .function("getDouble", &JsDynamicObject::getDouble)
-        .function("getBool", &JsDynamicObject::getBool)
-        .function("hasValue", &JsDynamicObject::hasValue)
-        .function("setInt", &JsDynamicObject::setInt)
-        .function("setString", &JsDynamicObject::setString)
-        .function("setDouble", &JsDynamicObject::setDouble)
-        .function("setBool", &JsDynamicObject::setBool)
-        .function("setNil", &JsDynamicObject::setNil)
-        .function("getObject", &JsDynamicObject::getObject)
-        .function("setObject", &JsDynamicObject::setObject)
-        .function("getLinkList", &JsDynamicObject::getLinkList);
+        .function("_result_getInt", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getInt(name); });
+        }))
+        .function("_result_getString", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getString(name); });
+        }))
+        .function("_result_getDouble", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getDouble(name); });
+        }))
+        .function("_result_getBool", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getBool(name); });
+        }))
+        .function("_result_getData", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getData(name); });
+        }))
+        .function("_result_hasValue", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.hasValue(name); });
+        }))
+        .function("_result_setInt", optional_override([](JsDynamicObject& object, const std::string& name, int64_t value) {
+            return object_operation_result([&] { object.setInt(name, value); });
+        }))
+        .function("_result_setString", optional_override([](JsDynamicObject& object, const std::string& name, const std::string& value) {
+            return object_operation_result([&] { object.setString(name, value); });
+        }))
+        .function("_result_setDouble", optional_override([](JsDynamicObject& object, const std::string& name, double value) {
+            return object_operation_result([&] { object.setDouble(name, value); });
+        }))
+        .function("_result_setBool", optional_override([](JsDynamicObject& object, const std::string& name, bool value) {
+            return object_operation_result([&] { object.setBool(name, value); });
+        }))
+        .function("_result_setData", optional_override([](JsDynamicObject& object, const std::string& name, const val& value) {
+            return object_operation_result([&] { object.setData(name, value); });
+        }))
+        .function("_result_setNil", optional_override([](JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { object.setNil(name); });
+        }))
+        .function("_result_getObject", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getObject(name); });
+        }))
+        .function("_result_setObject", optional_override([](JsDynamicObject& object, const std::string& name, JsDynamicObject& value) {
+            return object_operation_result([&] { object.setObject(name, value); });
+        }))
+        .function("_result_getLinkList", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getLinkList(name); });
+        }))
+        .function("_result_getUnion", optional_override([](const JsDynamicObject& object, const std::string& name) {
+            return object_operation_result([&] { return object.getUnion(name); });
+        }))
+        .function("_result_setUnion", optional_override([](JsDynamicObject& object, const std::string& name, const val& value) {
+            return object_operation_result([&] { object.setUnion(name, value); });
+        }));
 
     class_<JsLattice>("Lattice")
+        .smart_ptr<std::shared_ptr<JsLattice>>("LatticeHandle")
         .constructor<std::string, val>()
         .constructor<std::string, val, bool>()
         .constructor<std::string, val, std::string, std::string>()
         .constructor<std::string, val, std::string, std::string, int32_t, val>()
         .function("add", &JsLattice::add)
-        .function("addObject", &JsLattice::addObject)
+        .function("_result_addObject", optional_override([](JsLattice& database, const std::string& table, JsDynamicObject& object) {
+            return object_operation_result([&] { return database.addObject(table, object); });
+        }))
         .function("find", &JsLattice::find)
         .function("findObject", &JsLattice::findObject)
         .function("findByGlobalId", &JsLattice::findByGlobalId)
         .function("objects", &JsLattice::objects)
+        .function("_result_objectIdentities", optional_override([](JsLattice& database, const std::string& table,
+                    const val& where, const val& order, const val& limit, const val& offset,
+                    const val& group, const val& distinct) {
+            return object_operation_result([&] { return database.objectIdentities(table, where, order, limit, offset, group, distinct); });
+        }))
+        .function("_result_captureValuesSync", optional_override([](JsLattice& database, const val& selectors) {
+            return object_operation_result([&] { return database.captureValuesSync(selectors); });
+        }))
         .function("count", &JsLattice::count)
         .function("remove", &JsLattice::remove)
         .function("beginWrite", &JsLattice::beginWrite)
@@ -2524,6 +3158,12 @@ EMSCRIPTEN_BINDINGS(lattice) {
         // Audit log / sync methods
         .function("getPendingAuditLog", &JsLattice::getPendingAuditLog)
         .function("getUnshippedAuditLog", &JsLattice::getUnshippedAuditLog)
+        .function("_result_getUnshippedAuditFrames", optional_override([](JsLattice& database, bool local_only, int32_t max_entries) {
+            return object_operation_result([&] { return database.getUnshippedAuditFrames(local_only, max_entries); });
+        }))
+        .function("_result_importPendingFrame", optional_override([](JsLattice& database, const std::string& frame) {
+            return object_operation_result([&] { return database.importPendingFrame(frame); });
+        }))
         .function("releaseStorage", &JsLattice::releaseStorage)
         .function("walCheckpoint", &JsLattice::walCheckpoint)
         .function("applyRemoteChanges", &JsLattice::applyRemoteChanges)
@@ -2550,6 +3190,8 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("watchSyncSocket", &JsLattice::watchSyncSocket)
         .function("unwatchSyncSocket", &JsLattice::unwatchSyncSocket)
         .function("requestSyncUpload", &JsLattice::requestSyncUpload)
+        .function("disconnectSync", &JsLattice::disconnectSync)
+        .function("connectSync", &JsLattice::connectSync)
         .function("prepareClose", &JsLattice::prepareClose)
         .function("getPendingSyncUploadCount", &JsLattice::getPendingSyncUploadCount)
         .function("onSyncProgress", &JsLattice::onSyncProgress)
@@ -2559,4 +3201,11 @@ EMSCRIPTEN_BINDINGS(lattice) {
         .function("compactAuditLog", &JsLattice::compactAuditLog)
         .function("safeCompactAuditLog", &JsLattice::safeCompactAuditLog)
         .function("generateHistory", &JsLattice::generateHistory);
+    function("_openVersioned", &open_versioned_lattice);
+    function("_openAdmitted", &open_admitted_lattice);
+    function("_assertRestoreAllowed", optional_override([](const std::string& path) {
+        return object_operation_result([&] { JsLattice::assertRestoreAllowed(path); });
+    }));
+    function("syncAdmissionVersion", optional_override([]() { return 1; }));
+    install_object_result_wrappers();
 }

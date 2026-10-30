@@ -2,6 +2,8 @@
 export { Lattice, LogLevel } from './lattice';
 export { Results } from './results';
 export { List } from './list';
+export { defineModels } from './explicit-models';
+export type { ExplicitPropertyDescriptor, ExplicitModelDescriptor, ExplicitModelsDefinition, ExplicitValues, ExplicitModelConstructor, DefinedModels } from './explicit-models';
 export {
     model, link, list, nullable,
     indexed,
@@ -16,9 +18,11 @@ export { liveSyncSocketCount } from './sync-socket';
 // Orphaned-write drain — see ./pending-drain. The entry points live on
 // Lattice (`Lattice.pendingUploads`, `instance.drainPendingFrom`); these are
 // the pure pieces, exported for apps that keep their own journal.
-export { selectPendingUploads, drainPendingUploads } from './pending-drain';
+export { selectPendingUploads, drainPendingUploads, readPendingAuditFrames, drainPendingAuditFrames } from './pending-drain';
 export type {
     PendingUploadRow,
+    PendingAuditFrame,
+    PendingImportResult,
     PendingSelectOptions,
     DrainOptions,
     DrainReport,
@@ -32,6 +36,8 @@ export type {
     ColumnType,
     PropertyKind,
     PropertyDescriptor,
+    UnionCaseDescriptor,
+    UnionValue,
     Constraint,
     SchemaEntry,
     CollectionChange,
@@ -40,10 +46,15 @@ export type {
     LatticeWasm,
     LatticeWasmModule,
     SyncProgress,
+    SyncConfiguration,
+    SyncAdmissionContext,
     SyncStateInfo,
     LatticeCloseOptions,
     LatticeCloseResult,
+    LatticeReconnectOptions,
     SyncFilter,
     MigrationContext,
     TableChanges,
 } from './types';
+
+export type { CaptureSelector, CapturedLink, CapturedValue, CapturedRow, CapturedValues } from './capture-values';

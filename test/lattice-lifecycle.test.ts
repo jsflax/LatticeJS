@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'reflect-metadata';
-import type { SyncStateInfo } from '../src/types';
+import type { LatticeReconnectOptions, SyncStateInfo } from '../src/index';
 
 const { fakeWasmPath } = vi.hoisted(() => ({
     fakeWasmPath: new URL('./fixtures/lifecycle-wasm.js', import.meta.url).pathname,
@@ -13,7 +13,7 @@ class Socket {
     _lattice_client = 0;
     listeners = new Map<string, Set<(event: any) => void>>();
     hangClose = false;
-    constructor(readonly url: string) {}
+    constructor(readonly url: string) { (control.rawSockets ??= []).push(this); }
     addEventListener(type: string, callback: (event: any) => void) {
         const values = this.listeners.get(type) ?? new Set(); values.add(callback); this.listeners.set(type, values);
     }
@@ -35,7 +35,8 @@ beforeEach(() => {
     vi.stubGlobal('WebSocket', Socket);
     vi.stubGlobal('navigator', {});
 });
-afterEach(() => vi.unstubAllGlobals());
+
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 async function library() {
     const { Lattice } = await import('../src/lattice');
@@ -106,6 +107,57 @@ describe('Lattice instance lifecycle', () => {
         const db = await Lattice.open(':memory:timeouts', [Note], { sync });
         control.pending = () => 1; control.handles[0].store.socket.hangClose = true;
         expect(await db.close({ uploadTimeoutMs: 5, transportTimeoutMs: 5 })).toMatchObject({ uploads: 'timeout', transport: 'timeout', native: 'closed' });
+    });
+
+    it('admitted close waits for the physical socket while native storage and callbacks retire', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        control.admissionSupported = true;
+        const db = await Lattice.open(':memory:admitted-delay', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} }, onSyncState: value => states.push(value),
+        });
+        const raw = control.rawSockets[0] as Socket; raw.open(); raw.hangClose = true;
+        const proxy = control.handles[0].store.socket;
+        let completed = false;
+        const closing = db.close({ transportTimeoutMs: 1000 }).then(result => { completed = true; return result; });
+        expect(proxy.readyState).toBe(3); expect(raw.readyState).toBe(2);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        expect(control.releases).toBe(1); expect(completed).toBe(false);
+        raw.readyState = 3; raw.emit('close', { code: 1000, reason: '' });
+        expect(await closing).toEqual({ native: 'closed', transport: 'closed', uploads: 'not-requested', snapshot: 'not-persistent' });
+        expect(states.at(-1)?.state).toBe('open');
+        expect(raw.listeners.get('close')?.size).toBe(0);
+    });
+
+    it('admitted close reports a physical timeout even though its proxy is already CLOSED', async () => {
+        const { Lattice, Note } = await library();
+        control.admissionSupported = true;
+        const db = await Lattice.open(':memory:admitted-timeout', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} },
+        });
+        const raw = control.rawSockets[0] as Socket; raw.open(); raw.hangClose = true;
+        const closing = db.close({ transportTimeoutMs: 0 });
+        expect(control.handles[0].store.socket.readyState).toBe(3);
+        const result = await closing;
+        expect(result).toEqual({ native: 'closed', transport: 'timeout', uploads: 'not-requested', snapshot: 'not-persistent' });
+        raw.readyState = 3; raw.emit('close', { code: 1000, reason: '' });
+        expect(raw.listeners.get('close')?.size).toBe(0);
+        expect(await db.close()).toBe(result); // A later event cannot rewrite the original receipt.
+    });
+
+    it('admitted physical tracking retains legacy queued-frame purge and client detachment', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const db = await Lattice.open(':memory:admitted-legacy-cleanup', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} },
+        });
+        const handle = control.handles[0], proxy = handle.store.socket;
+        const raw = control.rawSockets[0] as Socket; raw.open(); raw.hangClose = true;
+        handle.prepareClose = undefined; // Admission capability alone is not the full lifecycle capability.
+        const closing = db.close({ transportTimeoutMs: 0 });
+        const result = await closing;
+        expect(control.purges).toBe(1); expect(proxy._lattice_client).toBe(0);
+        expect(result).toMatchObject({ native: 'unsupported', transport: 'timeout' });
+        raw.readyState = 3; raw.emit('close', { code: 1000, reason: '' });
+        expect(raw.listeners.get('close')?.size).toBe(0);
     });
 
     it('does not treat a failed pending count as zero or silently claim legacy cleanup', async () => {
@@ -278,5 +330,276 @@ describe('Lattice instance lifecycle', () => {
         expect(() => db.close({ snapshotTimeoutMs: -1 })).toThrow(RangeError);
         expect(() => db.close({ uploadTimeoutMs: 30001 })).toThrow(RangeError);
         await db.close();
+    });
+});
+
+describe('explicit same-store reconnect', () => {
+    it('coalesces requests, awaits physical closure and preserves the store and observers', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const attempts: Array<{ connectionGeneration: number; signal: AbortSignal }> = [];
+        const states: SyncStateInfo[] = [];
+        const db = await Lattice.open(':memory:reconnect', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async context => { attempts.push(context); } },
+            onSyncState: state => states.push(state),
+        });
+        const native = control.handles[0], store = native.store, old = control.rawSockets[0] as Socket;
+        old.open(); old.hangClose = true;
+        let rows = 0; db.observeTable(Note, () => rows++);
+        const callback = [...native.observers.values()][0] as () => void;
+        const options: LatticeReconnectOptions = { timeoutMs: 1000 };
+        const reconnect: Promise<SyncStateInfo> = db.reconnectSync(options);
+        expect(db.reconnectSync({ timeoutMs: 1 })).toBe(reconnect);
+        expect(control.disconnects ?? 0).toBe(0); // Native callback stack has not unwound yet.
+        await vi.waitFor(() => expect(old.readyState).toBe(2));
+        expect(states.at(-1)?.state).toBe('closed');
+        expect(attempts.map(value => value.connectionGeneration)).toEqual([1]);
+        expect(attempts[0].signal.aborted).toBe(true);
+        expect(control.connects ?? 0).toBe(0); expect(control.rawSockets).toHaveLength(1);
+        old.readyState = 3; old.emit('close');
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(2));
+        const replacement = control.rawSockets[1] as Socket; replacement.open();
+        expect(await reconnect).toMatchObject({ state: 'open', instanceId: states[0].instanceId, connectionGeneration: 2 });
+        expect(attempts.map(value => value.connectionGeneration)).toEqual([1, 2]);
+        expect(attempts[1].signal).not.toBe(attempts[0].signal);
+        expect(control.handles).toHaveLength(1); expect(native.store).toBe(store);
+        expect(control.releases).toBe(0); expect(control.deletes).toBe(0);
+        callback(); expect(rows).toBe(1); expect(native.observers.size).toBe(1);
+        expect(control.disconnects).toBe(1); expect(control.connects).toBe(1);
+        await db.close(); callback(); expect(rows).toBe(1);
+    });
+
+    it('allows recovery from a native callback only after its stack unwinds', async () => {
+        const { Lattice, Note } = await library(); const db = await Lattice.open(':memory:callback-reconnect', [Note], { sync });
+        let reconnect!: Promise<SyncStateInfo>;
+        db.observeTable(Note, () => { reconnect = db.reconnectSync({ timeoutMs: 1000 }); });
+        control.executing = true;
+        ([...control.handles[0].observers.values()][0] as () => void)();
+        expect(control.disconnects ?? 0).toBe(0);
+        control.executing = false;
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(2));
+        control.rawSockets[1].open(); expect((await reconnect).state).toBe('open');
+        await db.close();
+    });
+
+    it('refuses shared native ownership before interrupting a sibling socket or observer', async () => {
+        const { Lattice, Note } = await library();
+        const first = await Lattice.open(':memory:shared-reconnect', [Note], { sync });
+        const second = await Lattice.open(':memory:shared-reconnect', [Note], { sync });
+        const socket = control.rawSockets[0] as Socket; socket.open();
+        let rows = 0; second.observeTable(Note, () => rows++);
+        await expect(first.reconnectSync()).rejects.toThrow('exclusive native owner');
+        expect(socket.readyState).toBe(1); expect(control.rawSockets).toHaveLength(1);
+        expect(control.disconnects ?? 0).toBe(0); expect(control.connects ?? 0).toBe(0);
+        ([...control.handles[1].observers.values()][0] as () => void)(); expect(rows).toBe(1);
+        expect(await first.close()).toMatchObject({ native: 'shared', transport: 'shared' });
+        await second.close();
+    });
+
+    it('rechecks shared ownership after the asynchronous physical-close barrier', async () => {
+        const { Lattice, Note } = await library();
+        const first = await Lattice.open(':memory:late-shared', [Note], { sync });
+        const old = control.rawSockets[0] as Socket; old.hangClose = true;
+        const failed = first.reconnectSync({ timeoutMs: 1000 }).catch(error => error);
+        await vi.waitFor(() => expect(old.readyState).toBe(2));
+        const second = await Lattice.open(':memory:late-shared', [Note], { sync });
+        old.readyState = 3; old.emit('close');
+        expect(await failed).toMatchObject({ message: 'Sync reconnect requires an exclusive native owner' });
+        expect(control.connects ?? 0).toBe(0); expect(control.rawSockets).toHaveLength(1);
+        await first.close(); await second.close();
+    });
+
+    it('refuses unknown physical closure, then recovers only after the real close arrives', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const admission = vi.fn(async () => {});
+        const db = await Lattice.open(':memory:unknown-close', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: admission },
+        });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(1));
+        const old = control.rawSockets[0] as Socket; old.open(); old.hangClose = true;
+        vi.useFakeTimers();
+        const failed = db.reconnectSync({ timeoutMs: 20 }).catch(error => error);
+        await vi.advanceTimersByTimeAsync(20);
+        expect((await failed).message).toMatch(/timed out|closure is unknown/);
+        vi.useRealTimers();
+        expect(control.rawSockets).toHaveLength(1); expect(admission).toHaveBeenCalledTimes(1);
+        expect(control.connects ?? 0).toBe(0);
+        old.readyState = 3; old.emit('close');
+        const retry = db.reconnectSync({ timeoutMs: 1000 });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(2));
+        control.rawSockets[1].open(); expect((await retry).connectionGeneration).toBe(2);
+        expect(admission).toHaveBeenCalledTimes(2); await db.close();
+    });
+
+    it('close cancels a waiting reconnect without claiming the still-closing transport is closed', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const db = await Lattice.open(':memory:close-during-reconnect', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async () => {} },
+        });
+        const old = control.rawSockets[0] as Socket; old.hangClose = true;
+        const failed = db.reconnectSync({ timeoutMs: 1000 }).catch(error => error);
+        await vi.waitFor(() => expect(old.readyState).toBe(2));
+        const closed = await db.close({ transportTimeoutMs: 0 });
+        expect(await failed).toBeInstanceOf(Error);
+        expect(closed).toMatchObject({ native: 'closed', transport: 'timeout' });
+        expect(control.rawSockets).toHaveLength(1); expect(control.connects ?? 0).toBe(0);
+        old.readyState = 3; old.emit('close');
+        expect(old.listeners.get('close')?.size).toBe(0);
+    });
+
+    it('revocation cancels fresh admission and its late completion never constructs a socket', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const owner = new AbortController(); let finish!: () => void; let secondSignal!: AbortSignal;
+        const held = new Promise<void>(resolve => { finish = resolve; });
+        const db = await Lattice.open(':memory:revoke-reconnect', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, signal: owner.signal, beforeConnect: async context => {
+                if (context.connectionGeneration === 2) { secondSignal = context.signal; await held; }
+            } },
+        });
+        const failed = db.reconnectSync({ timeoutMs: 1000 }).catch(error => error);
+        await vi.waitFor(() => expect(secondSignal).toBeDefined());
+        owner.abort(); expect(secondSignal.aborted).toBe(true);
+        expect(await failed).toBeInstanceOf(Error);
+        finish(); await Promise.resolve(); await Promise.resolve();
+        expect(control.rawSockets).toHaveLength(1);
+        expect(() => db.reconnectSync()).toThrow('Sync admission owner is closed');
+        expect(await db.close()).toMatchObject({ native: 'closed', transport: 'closed' });
+    });
+
+    it('an open timeout retires pending admission but preserves explicit retry and its next generation', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        let finish!: () => void; let pendingSignal!: AbortSignal;
+        const held = new Promise<void>(resolve => { finish = resolve; });
+        const generations: number[] = [];
+        const db = await Lattice.open(':memory:open-timeout-reconnect', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async context => {
+                generations.push(context.connectionGeneration);
+                if (context.connectionGeneration === 2) { pendingSignal = context.signal; await held; }
+            } },
+        });
+        vi.useFakeTimers();
+        const failed = db.reconnectSync({ timeoutMs: 30 }).catch(error => error);
+        await vi.advanceTimersByTimeAsync(5);
+        expect(pendingSignal).toBeDefined();
+        await vi.advanceTimersByTimeAsync(30);
+        expect((await failed).message).toBe('Sync reconnect timed out.');
+        vi.useRealTimers();
+        expect(pendingSignal.aborted).toBe(true);
+        finish(); await Promise.resolve(); await Promise.resolve();
+        expect(control.rawSockets).toHaveLength(1); expect(generations).toEqual([1, 2]);
+        const retry = db.reconnectSync({ timeoutMs: 1000 });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(2));
+        control.rawSockets[1].open(); expect((await retry).connectionGeneration).toBe(3);
+        expect(generations).toEqual([1, 2, 3]); await db.close();
+    });
+
+    it('rejects refused fresh admission without an automatic second attempt', async () => {
+        const { Lattice, Note } = await library(); control.admissionSupported = true;
+        const generations: number[] = [];
+        const db = await Lattice.open(':memory:refused-reconnect', [Note], {
+            sync: { websocketUrl: sync.websocketUrl, beforeConnect: async context => {
+                generations.push(context.connectionGeneration);
+                if (context.connectionGeneration === 2) throw new Error('private host refusal');
+            } },
+        });
+        await expect(db.reconnectSync({ timeoutMs: 1000 })).rejects.toThrow('Sync reconnect did not open');
+        expect(generations).toEqual([1, 2]); expect(control.rawSockets).toHaveLength(1);
+        await db.close();
+    });
+
+    it('retires late raw open delivery immediately on timeout before deferred disconnect', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        const db = await Lattice.open(':memory:late-open-timeout', [Note], { sync, onSyncState: state => states.push(state) });
+        control.rawSockets[0].open();
+        vi.useFakeTimers();
+        const failed = db.reconnectSync({ timeoutMs: 30 }).catch(error => error);
+        await vi.advanceTimersByTimeAsync(5);
+        const raw = control.rawSockets[1] as Socket; raw.hangClose = true;
+        expect(states.at(-1)?.state).toBe('connecting');
+        await vi.advanceTimersByTimeAsync(25);
+        expect(states.at(-1)).toMatchObject({ state: 'closed', connectionGeneration: 2 });
+        expect(raw.readyState).toBe(0); // Deferred native disconnect has not run yet.
+        expect(raw.listeners.get('open')?.size ?? 0).toBe(0);
+        const retired = states.length;
+        raw.open();
+        expect(states).toHaveLength(retired);
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await failed).message).toBe('Sync reconnect timed out.');
+        expect(raw.readyState).toBe(2);
+        vi.useRealTimers();
+        raw.readyState = 3; raw.emit('close');
+        const retry = db.reconnectSync({ timeoutMs: 1000 });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(3));
+        control.rawSockets[2].open();
+        expect((await retry).connectionGeneration).toBe(3);
+        await db.close();
+    });
+
+    it('does not let a queued native watcher re-adopt a failed unobserved attempt', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        const db = await Lattice.open(':memory:late-native-watch', [Note], { sync, onSyncState: state => states.push(state) });
+        const native = control.handles[0], watch = [...native.watchers.values()][0] as (socket: Socket) => void;
+        const get = native.getSyncSocket.bind(native), disconnect = native.disconnectSync.bind(native);
+        let allowGetter = false;
+        native.getSyncSocket = () => {
+            if (control.connects === 1 && !allowGetter) throw new Error('post-connect getter failed');
+            return get();
+        };
+        native.disconnectSync = () => {
+            if (control.connects === 1) native.store.socket.hangClose = true;
+            disconnect();
+        };
+        control.deferReconnectWatch = true;
+        control.rawSockets[0].open();
+        await expect(db.reconnectSync({ timeoutMs: 1000 })).rejects.toThrow('post-connect getter failed');
+        const raw = control.rawSockets[1] as Socket, retired = states.length;
+        raw.open(); watch(raw); raw.emit('open');
+        expect(states).toHaveLength(retired);
+        expect(states.at(-1)?.state).toBe('closed');
+        expect(raw.listeners.get('open')?.size ?? 0).toBe(0);
+        raw.readyState = 3; raw.emit('close');
+        allowGetter = true; control.deferReconnectWatch = false;
+        const retry = db.reconnectSync({ timeoutMs: 1000 });
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(3));
+        control.rawSockets[2].open();
+        expect((await retry).state).toBe('open');
+        expect(control.handles).toHaveLength(1); expect(control.connects).toBe(2);
+        await db.close();
+    });
+
+    it('does not report open success if an earlier public state listener closes the owner', async () => {
+        const { Lattice, Note } = await library(); const db = await Lattice.open(':memory:reentrant-reconnect', [Note], { sync });
+        let closed: ReturnType<typeof db.close> | undefined;
+        db.onSyncState(info => { if (info.connectionGeneration === 2 && info.state === 'open') closed = db.close(); });
+        const failed = db.reconnectSync({ timeoutMs: 1000 }).catch(error => error);
+        await vi.waitFor(() => expect(control.rawSockets).toHaveLength(2));
+        control.rawSockets[1].open();
+        expect(await failed).toBeInstanceOf(Error);
+        expect(await closed).toMatchObject({ native: 'closed', transport: 'closed' });
+        expect(control.connects).toBe(1);
+    });
+
+    it('refuses unsupported, unsynced, closed and invalid requests before native mutation', async () => {
+        const { Lattice, Note } = await library();
+        const local = await Lattice.open(':memory:no-sync', [Note]);
+        expect(() => local.reconnectSync()).toThrow('capability is unavailable'); await local.close();
+        const db = await Lattice.open(':memory:reconnect-policy', [Note], { sync });
+        for (const timeoutMs of [-1, Infinity, NaN, 30001]) expect(() => db.reconnectSync({ timeoutMs })).toThrow(RangeError);
+        await expect(db.reconnectSync({ timeoutMs: 0 })).rejects.toThrow('timed out');
+        const native = control.handles[1]; native.connectSync = undefined;
+        expect(() => db.reconnectSync()).toThrow('capability is unavailable');
+        expect(control.disconnects ?? 0).toBe(0); expect(control.connects ?? 0).toBe(0);
+        await db.close(); expect(() => db.reconnectSync()).toThrow('closing or closed');
+    });
+
+    it('a throwing transport disconnect retires only this wrapper connected claim and never redials', async () => {
+        const { Lattice, Note } = await library(); const states: SyncStateInfo[] = [];
+        const db = await Lattice.open(':memory:throwing-disconnect', [Note], { sync, onSyncState: state => states.push(state) });
+        const old = control.rawSockets[0] as Socket; old.open();
+        const originalClose = old.close;
+        old.close = () => { throw new Error('raw close failed'); };
+        await expect(db.reconnectSync()).rejects.toThrow('raw close failed');
+        expect(states.at(-1)?.state).toBe('error');
+        expect(control.rawSockets).toHaveLength(1); expect(control.connects ?? 0).toBe(0);
+        old.close = originalClose; await db.close();
     });
 });

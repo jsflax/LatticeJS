@@ -1,7 +1,33 @@
 // Core types for LatticeJS
 
 export type ColumnType = 'string' | 'int' | 'float' | 'bool' | 'blob' | 'date';
-export type PropertyKind = 'primitive' | 'link' | 'list';
+
+export interface SyncAdmissionContext {
+    readonly signal: AbortSignal;
+    readonly connectionGeneration: number;
+    /** Stable configured endpoint, excluding Core's noncredential resume cursor. */
+    readonly websocketUrl: string;
+    readonly instanceId: string;
+}
+
+export interface SyncConfiguration {
+    websocketUrl: string;
+    authToken?: string;
+    /** Resolve after server-side admission, without returning a credential. Runs before every upgrade. */
+    beforeConnect?: (context: SyncAdmissionContext) => Promise<void>;
+    /** Cancels pending admission and closes the transport for this owner. */
+    signal?: AbortSignal;
+}
+export type PropertyKind = 'primitive' | 'link' | 'list' | 'union';
+
+export interface UnionCaseDescriptor {
+    readonly name: string;
+    readonly values: readonly { readonly paramName: string; readonly type: 'string' | 'int' }[];
+}
+export interface UnionValue {
+    readonly case: string;
+    readonly fields: Readonly<Record<string, string | bigint>>;
+}
 
 export interface PropertyDescriptor {
     name: string;
@@ -12,6 +38,9 @@ export interface PropertyDescriptor {
     isVector?: boolean;
     isFullText?: boolean;
     isIndexed?: boolean;
+    noHistory?: boolean;
+    logicalNullable?: boolean;
+    unionCases?: readonly UnionCaseDescriptor[];
 }
 
 export interface Constraint {
@@ -68,6 +97,10 @@ export type ModelConstructor<T = any> = new (...args: any[]) => T;
 // WASM module interface (what Embind exports)
 export interface LatticeWasmModule {
     Lattice: new (path: string, schemas: SchemaEntry[]) => LatticeWasm;
+    /** Exact first union descriptor/value capability; absent in older builds. */
+    explicitUnionVersion?: () => number;
+    explicitNoHistoryVersion?: () => number;
+    syncAdmissionVersion?: () => number;
 }
 
 export interface LatticeWasm {
@@ -86,6 +119,8 @@ export interface LatticeWasm {
         groupBy?: string | null,
         distinctBy?: string | null
     ): Record<string, any>[];
+    /** Identity-only rows for explicit-model hydration; absent in older runtimes. */
+    objectIdentities?: LatticeWasm['objects'];
     count(
         tableName: string,
         whereClause: string | null,
@@ -102,12 +137,18 @@ export interface LatticeWasm {
     // Bulk insert
     addBulk(tableName: string, objects: Record<string, any>[]): { id: number; globalId: string }[];
 
+    /** Single-call detached read capability; absent runtimes must refuse. */
+    captureValuesSync?: (selectors: readonly import('./capture-values').CaptureSelector[]) => unknown;
+
     // Audit log / sync methods
     getPendingAuditLog(): string;
     /** The rows this store still OWES upstream (unsynced AND unmarked in
      *  _lattice_sync_state) — downloads excluded, stranded local writes and
      *  drained-in rows included. The drain predicate, in SQL. */
     getUnshippedAuditLog(): string;
+    /** Exact native frame capability; older runtimes must not fall back to JS numeric decoding. */
+    getUnshippedAuditFrames?: (localOnly: boolean, maxEntries: number) => import('./pending-drain').PendingAuditFrame[];
+    importPendingFrame?: (frame: string) => import('./pending-drain').PendingImportResult;
     /** Release this handle's native store reference. Shared holders retain
      *  storage. Legacy bindings only support read-only audit release and return
      *  void. Idempotent; no store method is valid on this handle afterwards. */
@@ -143,6 +184,9 @@ export interface LatticeWasm {
     watchSyncSocket?(callback: (socket: import('./sync-socket').TrackedSyncSocket | null) => void): number;
     unwatchSyncSocket?(observerId: number): void;
     prepareClose?(): 'exclusive' | 'shared' | 'already-released';
+    /** Same-store reconnect requires both guarded exclusive-owner bindings. */
+    disconnectSync?(): void;
+    connectSync?(): void;
     requestSyncUpload?(): void;
     getPendingSyncUploadCount?(): number;
     onSyncProgress(callback: (progress: SyncProgress) => void): number;
@@ -171,10 +215,16 @@ export interface SyncStateInfo {
 export interface LatticeCloseOptions {
     /** Opt-in upload drain. Zero (the default) does not promise upload delivery. */
     uploadTimeoutMs?: number;
-    /** Wait for browser socket CLOSED, default 2000ms. */
+    /** Wait for browser socket closure, including all admitted attempts, default 2000ms.
+     * Logical cancellation of an admitted attempt does not prove transport closure. */
     transportTimeoutMs?: number;
     /** Wait for the final persistent save, default 2000ms. */
     snapshotTimeoutMs?: number;
+}
+
+export interface LatticeReconnectOptions {
+    /** Overall disconnect/physical-close/admission/open deadline; default 10000ms, maximum 30000ms. */
+    timeoutMs?: number;
 }
 
 export interface LatticeCloseResult {

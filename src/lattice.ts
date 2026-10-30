@@ -1,6 +1,10 @@
 // Main Lattice class - user-facing API
-import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult } from './types';
+import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult, LatticeReconnectOptions, SyncConfiguration } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
+import { assertSafeAuditValue, parseSafeAuditJSON } from './audit-json';
+import { captureValuesSync as captureDetachedValues, type CaptureSelector, type CapturedValues } from './capture-values';
+import { SyncAdmissionOwner, validateSyncAdmission } from './sync-admission';
+import { checkedRowId, isExplicitModel } from './explicit-values';
 import { setWasmModule, DYNAMIC_OBJECT, PROPERTY_SCHEMA, LATTICE_REF } from './storage';
 import { Results } from './results';
 import { safeRandomUUID } from './uuid';
@@ -16,7 +20,10 @@ import {
 } from './sync-socket';
 import {
     selectPendingUploads,
-    drainPendingUploads,
+    drainPendingAuditFrames,
+    readPendingAuditFrames,
+    validatePendingImportResult,
+    type PendingAuditFrame,
     waitForCatchUpQuiet,
     emptyDrainReport,
     type PendingUploadRow,
@@ -40,6 +47,10 @@ export interface AuditLogEntry {
     timestamp: string;
     isFromRemote: boolean;
     isSynchronized: boolean;
+    /** Synthesized snapshots use Core's insert-if-absent apply semantics. */
+    synthesized?: boolean;
+    /** Explicit live NULLs, distinct from NoHistory audit placeholders. */
+    noHistoryNulls?: string[];
 }
 
 // Static imports - bundler handles the URLs
@@ -79,6 +90,7 @@ export enum LogLevel {
 // Global WASM module cache
 let wasmModule: any = null;
 let wasmInitialization: Promise<any> | null = null;
+class SyncAdmissionConflictError extends Error {}
 
 /** How long `resumePendingFrom` waits for the new store's socket to open. */
 const RESUME_CONNECT_TIMEOUT_MS = 20000;
@@ -123,6 +135,8 @@ export class Lattice {
     private socketWatchId: number | null = null;
     private readonly stopWaits = new Set<() => void>();
     private closePromise: Promise<LatticeCloseResult> | null = null;
+    private reconnectPromise: Promise<SyncStateInfo> | null = null;
+    private reconnectStateSuppressed = false;
     private nativeCleanupResult: LatticeCloseResult['native'] | null = null;
     private readonly observerDisposers = new Set<() => void>();
 
@@ -132,6 +146,7 @@ export class Lattice {
         modelMap: Map<string, ModelConstructor>,
         private readonly syncState: InstanceSyncState,
         private readonly syncConfigured: boolean,
+        private readonly syncAdmission: SyncAdmissionOwner | null = null,
     ) {
         this.db = db;
         this.schemas = schemas;
@@ -141,10 +156,7 @@ export class Lattice {
     /**
      * Sync configuration for connecting to a Lattice server.
      */
-    static syncConfig?: {
-        websocketUrl: string;
-        authToken?: string;
-    };
+    static syncConfig?: SyncConfiguration;
 
     /**
      * Load and cache the WASM module (idempotent). Every entry point that
@@ -211,18 +223,21 @@ export class Lattice {
         try {
             this.socketWatchId = this.db.watchSyncSocket(socket => {
                 if (this.closing) return;
-                if (socket === (this.syncSockets[0] ?? null)) return;
-                // A native handoff, not JS lease counts, determines old transport
-                // closure. Late watcher delivery cannot close a sibling's socket.
-                forgetSyncSockets(this.syncSockets);
-                this.syncSockets = socket ? [socket] : [];
-                claimSyncSockets(this.syncSockets);
-                this.syncState.bind(socket);
+                this.adoptSyncSocket(socket);
             });
         } catch (error) {
             void this.close();
             throw error;
         }
+    }
+
+    private adoptSyncSocket(socket: TrackedSyncSocket | null): void {
+        if (socket === (this.syncSockets[0] ?? null)) return;
+        // A native handoff, not JS lease counts, determines old transport closure.
+        forgetSyncSockets(this.syncSockets);
+        this.syncSockets = socket ? [socket] : [];
+        claimSyncSockets(this.syncSockets);
+        if (!this.reconnectStateSuppressed) this.syncState.bind(socket);
     }
 
     /**
@@ -238,10 +253,7 @@ export class Lattice {
         options?: {
             /** Installed before transport construction; events belong to this instance. */
             onSyncState?: (info: SyncStateInfo) => void;
-            sync?: {
-                websocketUrl: string;
-                authToken?: string;
-            };
+            sync?: SyncConfiguration;
             schemaVersion?: number;
             migration?: (ctx: MigrationContext) => void;
             /**
@@ -266,6 +278,22 @@ export class Lattice {
             onResumePending?: (report: DrainReport) => void;
         }
     ): Promise<Lattice> {
+        if (options?.schemaVersion !== undefined &&
+            (!Number.isInteger(options.schemaVersion) || options.schemaVersion < 1 || options.schemaVersion > 2147483647)) {
+            throw new RangeError('schemaVersion must be an integer between 1 and 2147483647');
+        }
+        if (options?.migration && options.schemaVersion === undefined) {
+            throw new TypeError('migration requires an explicit schemaVersion');
+        }
+        // Snapshot the admission policy before loading/restoring can yield to the host.
+        const syncConfig = options?.sync ? { ...options.sync } : undefined;
+        validateSyncAdmission(syncConfig);
+        if (syncConfig?.beforeConnect && path.startsWith('file:')) {
+            throw new TypeError('Admitted sync does not support SQLite file: URI paths; use a :memory: store path');
+        }
+        if (syncConfig?.beforeConnect && !(path === ':memory:' || path.startsWith(':memory:'))) {
+            throw new TypeError('Admitted sync is memory-only; persistent stores require a pre-restore ownership reservation');
+        }
         // Build schemas from models
         const schemas = buildSchemas(models);
 
@@ -278,14 +306,32 @@ export class Lattice {
             }
         }
 
-        const state = new InstanceSyncState(safeRandomUUID(), !!options?.sync?.websocketUrl);
+        const instanceId = safeRandomUUID();
+        const state = new InstanceSyncState(instanceId, !!syncConfig?.websocketUrl);
+        let admission: SyncAdmissionOwner | null = null;
         if (options?.onSyncState) state.subscribe(options.onSyncState);
         try {
             // Load WASM module if not already loaded (needed for main thread)
             await Lattice.ensureWasm();
 
+            if (schemas.some(schema => schema.properties.some(property => property.kind === 'union')) &&
+                wasmModule.explicitUnionVersion?.() !== 1) {
+                throw new Error('Native explicitUnionVersion 1 capability required');
+            }
+            if (schemas.some(schema => schema.properties.some(property => property.noHistory === true)) &&
+                wasmModule.explicitNoHistoryVersion?.() !== 1) {
+                throw new Error('Native explicitNoHistoryVersion 1 capability required');
+            }
+
+            if (syncConfig?.beforeConnect) {
+                if (wasmModule.syncAdmissionVersion?.() !== 1 || typeof wasmModule._openAdmitted !== 'function' ||
+                    typeof wasmModule._assertRestoreAllowed !== 'function') {
+                    throw new Error('Native syncAdmissionVersion 1 capability required');
+                }
+                admission = new SyncAdmissionOwner(syncConfig, instanceId);
+            }
+
             const isInMemory = path === ':memory:' || path.startsWith(':memory:');
-            const syncConfig = options?.sync;
             const schemaVersion = options?.schemaVersion;
             const migrationFn = options?.migration;
             let lattice: Lattice;
@@ -293,55 +339,15 @@ export class Lattice {
             if (isInMemory) {
                 // In-memory: just use main thread
                 console.log('[Lattice] Creating in-memory database');
-                const makeDb = (): LatticeWasm => {
-                    if (schemaVersion && migrationFn) {
-                        // Migration-aware constructor
-                        const jsMigrationCallback = (ctx: any) => {
-                            const migrationCtx: MigrationContext = {
-                                pendingChanges: () => ctx.pendingChanges as TableChanges[],
-                                hasChangesFor: (tableName: string) => {
-                                    return (ctx.pendingChanges as TableChanges[]).some(
-                                        (c: TableChanges) => c.tableName === tableName &&
-                                            (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
-                                    );
-                                },
-                                renameProperty: (tableName: string, oldName: string, newName: string) => {
-                                    // Call C++ via the context pointer
-                                    wasmModule._migration_rename_property(ctx._ctx_ptr, tableName, oldName, newName);
-                                },
-                                deleteAll: (tableName: string) => {
-                                    wasmModule._migration_delete_all(ctx._ctx_ptr, tableName);
-                                },
-                                executeSql: (sql: string) => {
-                                    wasmModule._migration_execute_sql(ctx._ctx_ptr, sql);
-                                },
-                                enumerateObjects: () => {
-                                    // Complex operation — not exposed in initial version
-                                    console.warn('enumerateObjects not yet supported in WASM migrations');
-                                },
-                            };
-                            migrationFn(migrationCtx);
-                        };
-                        return new wasmModule.Lattice(
-                            path, schemas,
-                            syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
-                            schemaVersion, jsMigrationCallback
-                        );
-                    } else if (syncConfig?.websocketUrl) {
-                        console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-                        return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-                    } else {
-                        return new wasmModule.Lattice(path, schemas);
-                    }
-                };
+                const makeDb = () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn, admission);
                 const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, makeDb, state);
-                lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
+                lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl, admission);
                 lattice.syncSockets = sockets;
                 lattice.startSyncSocketWatch();
             } else {
                 // Persistent: same main-thread wasm, snapshotted to and restored
                 // from OPFS. See openPersistent.
-                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig);
+                lattice = await Lattice.openPersistent(path, schemas, modelMap, state, syncConfig, schemaVersion, migrationFn, admission);
             }
 
             // Rescue whatever the store this one replaces never managed to upload.
@@ -355,8 +361,87 @@ export class Lattice {
             }
             return lattice;
         } catch (error) {
+            admission?.dispose();
             state.fail(); state.retire();
             throw error;
+        }
+    }
+
+    // Both storage modes must use the same schema admission path. In particular,
+    // restoring an OPFS cache must never discard an explicitly requested version.
+    private static createDatabase(
+        path: string,
+        schemas: SchemaEntry[],
+        syncConfig?: SyncConfiguration,
+        schemaVersion?: number,
+        migrationFn?: (ctx: MigrationContext) => void,
+        admission: SyncAdmissionOwner | null = null,
+    ): LatticeWasm {
+        // Legacy callers receive a normal JS error before a raw constructor can
+        // collide with an admitted owner; this also follows any async restore.
+        if (!admission) Lattice.assertRestoreAllowed(path);
+        if (schemaVersion !== undefined) {
+            // Migration-aware constructor
+            const jsMigrationCallback = migrationFn ? (ctx: any) => {
+                let active = true;
+                const assertActive = () => {
+                    if (!active) throw new Error('Migration context is no longer active');
+                };
+                const call = (method: string, ...args: string[]) => {
+                    assertActive();
+                    const result = wasmModule[method](ctx._ctx_ptr, ...args);
+                    if (result?.ok !== true) throw new Error(result?.error ?? 'Native migration operation failed');
+                };
+                const migrationCtx: MigrationContext = {
+                    pendingChanges: () => { assertActive(); return ctx.pendingChanges as TableChanges[]; },
+                    hasChangesFor: (tableName: string) => {
+                        assertActive();
+                        return (ctx.pendingChanges as TableChanges[]).some(
+                            (c: TableChanges) => c.tableName === tableName &&
+                                (c.addedColumns.length > 0 || c.removedColumns.length > 0 || c.changedColumns.length > 0)
+                        );
+                    },
+                    renameProperty: (tableName: string, oldName: string, newName: string) => {
+                        call('_migration_rename_property', tableName, oldName, newName);
+                    },
+                    deleteAll: (tableName: string) => {
+                        call('_migration_delete_all', tableName);
+                    },
+                    executeSql: (sql: string) => {
+                        call('_migration_execute_sql', sql);
+                    },
+                    enumerateObjects: () => {
+                        throw new Error('enumerateObjects is not supported in WASM migrations');
+                    },
+                };
+                try {
+                    const result: unknown = migrationFn(migrationCtx);
+                    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+                        // Retire the context even if an accidentally async callback resumes later.
+                        // Observe a possible rejection so it cannot become an unhandled promise.
+                        Promise.resolve(result).catch(() => {});
+                        throw new TypeError('migration must complete synchronously');
+                    }
+                } finally { active = false; }
+            } : null;
+            const result = admission ? wasmModule._openAdmitted(
+                path, schemas, syncConfig!.websocketUrl, schemaVersion, jsMigrationCallback, admission.createSocket,
+            ) : wasmModule._openVersioned(
+                path, schemas,
+                syncConfig?.websocketUrl || '', syncConfig?.authToken || '',
+                schemaVersion, jsMigrationCallback
+            );
+            if (result?.ok !== true) throw new Error(result?.error ?? 'Versioned database open failed');
+            return result.db;
+        } else if (admission) {
+            const result = wasmModule._openAdmitted(path, schemas, syncConfig!.websocketUrl, 0, null, admission.createSocket);
+            if (result?.ok !== true) throw new Error(result?.error ?? 'Admitted database open failed');
+            return result.db;
+        } else if (syncConfig?.websocketUrl) {
+            console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
+            return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
+        } else {
+            return new wasmModule.Lattice(path, schemas);
         }
     }
 
@@ -378,7 +463,10 @@ export class Lattice {
         schemas: SchemaEntry[],
         modelMap: Map<string, ModelConstructor>,
         state: InstanceSyncState,
-        syncConfig?: { websocketUrl: string; authToken?: string }
+        syncConfig?: SyncConfiguration,
+        schemaVersion?: number,
+        migrationFn?: (ctx: MigrationContext) => void,
+        admission: SyncAdmissionOwner | null = null,
     ): Promise<Lattice> {
         console.log('[Lattice] Opening persistent database:', path);
 
@@ -389,14 +477,9 @@ export class Lattice {
         }
 
         // Open with named path (MEMFS) + sync
-        const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl, () => {
-            if (syncConfig?.websocketUrl) {
-                console.log('[Lattice] Sync enabled:', syncConfig.websocketUrl);
-                return new wasmModule.Lattice(path, schemas, syncConfig.websocketUrl, syncConfig.authToken || '');
-            }
-            return new wasmModule.Lattice(path, schemas);
-        }, state);
-        const lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl);
+        const { db, sockets } = await Lattice.constructWithSyncSocket(syncConfig?.websocketUrl,
+            () => Lattice.createDatabase(path, schemas, syncConfig, schemaVersion, migrationFn, admission), state);
+        const lattice = new Lattice(db, schemas, modelMap, state, !!syncConfig?.websocketUrl, admission);
         lattice.syncSockets = sockets;
         try {
             lattice.startSyncSocketWatch();
@@ -541,6 +624,17 @@ export class Lattice {
         }
     }
 
+    private static assertRestoreAllowed(path: string): void {
+        if (typeof wasmModule._assertRestoreAllowed !== 'function') {
+            if (typeof wasmModule.syncAdmissionVersion === 'function') {
+                throw new SyncAdmissionConflictError('Native admission store guard is unavailable');
+            }
+            return; // Older artifacts cannot create an admitted owner.
+        }
+        const result = wasmModule._assertRestoreAllowed(path);
+        if (result?.ok !== true) throw new SyncAdmissionConflictError(result?.error ?? 'Admitted store ownership prevents restore');
+    }
+
     /**
      * Restore database snapshot from OPFS into Emscripten MEMFS.
      */
@@ -557,11 +651,14 @@ export class Lattice {
 
             if (data.length === 0) return false;
 
-            // Write to Emscripten MEMFS so SQLite finds it when opening
+            // This is the only restore mutation. Check immediately before it,
+            // after all OPFS awaits, with no yield before writeFile can truncate.
+            Lattice.assertRestoreAllowed(path);
             wasmModule.FS.writeFile(path, data);
             console.log(`[Lattice] Snapshot restored: ${data.length} bytes`);
             return true;
-        } catch {
+        } catch (error) {
+            if (error instanceof SyncAdmissionConflictError) throw error;
             return false;
         }
     }
@@ -590,7 +687,8 @@ export class Lattice {
      * @param path   the ABANDONED store's path (the previous name in a redial)
      * @param models retained for API compatibility; the audit open
      *               reconstructs the schema from the file and never migrates
-     * @returns un-ACKed rows, oldest first, as plain JSON (see
+     * Unsafe numeric values are refused; use pendingUploadFrames for exact Int64s.
+     * @returns un-ACKed safe-number rows, oldest first (see
      *          PendingUploadRow) — or **null when no store exists at `path`**
      *          (never created, snapshot gone, or a wrong name), which is NOT
      *          the same as an empty pending set. Journal them, count them,
@@ -603,7 +701,20 @@ export class Lattice {
         options?: PendingSelectOptions,
     ): Promise<PendingUploadRow[] | null> {
         await Lattice.ensureWasm();
-        return Lattice.readPendingAt(path, options);
+        return Lattice.readPendingAt(path, db => readPendingAuditFrames(db, options).flatMap(frame => selectPendingUploads(frame.json)));
+    }
+
+    /** One bounded synchronous native copy. Returns detached immutable physical
+     * values, never managed wrappers. No transaction may already be active. */
+    captureValuesSync(selectors: readonly CaptureSelector[]): CapturedValues {
+        this.assertOpen();
+        return captureDetachedValues(this.db, selectors);
+    }
+
+    /** Read-only exact audit frames for journalling/rescue; payloads must remain opaque. */
+    static async pendingUploadFrames(path: string, options?: PendingSelectOptions, maxEntries = 200): Promise<readonly PendingAuditFrame[] | null> {
+        await Lattice.ensureWasm();
+        return Lattice.readPendingAt(path, db => readPendingAuditFrames(db, options, maxEntries));
     }
 
     /**
@@ -647,7 +758,8 @@ export class Lattice {
         }
 
         await Lattice.ensureWasm();
-        const rows = await Lattice.readPendingAt(previousPath, options);
+        if (typeof this.db.importPendingFrame !== 'function') throw new Error('Native guarded pending import capability required');
+        const rows = await Lattice.readPendingAt(previousPath, db => readPendingAuditFrames(db, options));
         this.assertOpen();
         if (rows === null) {
             // A missing store is NOT an empty one: the caller named a path
@@ -660,14 +772,9 @@ export class Lattice {
         }
         if (rows.length === 0) return report;
 
-        const drained = await drainPendingUploads({
-            getPendingAuditLog: () => { this.assertOpen(); return this.db.getPendingAuditLog(); },
-            applyRemoteChanges: json => { this.assertOpen(); return this.db.applyRemoteChanges(json); },
-        }, rows, {
-            ...options,
-            tables: this.schemas.map((s) => s.tableName),
-            sleep: ms => this.sleepWhileOpen(ms),
-        });
+        const drained = await drainPendingAuditFrames({
+            importPendingFrame: json => { this.assertOpen(); return this.db.importPendingFrame!(json); },
+        }, rows, { sleep: ms => this.sleepWhileOpen(ms) });
         console.log(
             `[Lattice] drained ${drained.applied.length}/${drained.found} pending row(s) from ${previousPath}` +
             ` (already present: ${drained.alreadyPresent}, unknown table: ${drained.unknownTable}` +
@@ -686,10 +793,7 @@ export class Lattice {
      * sqlite handle may still hold open. So: restore only when MEMFS has
      * nothing.
      */
-    private static async readPendingAt(
-        path: string,
-        options?: PendingSelectOptions,
-    ): Promise<PendingUploadRow[] | null> {
+    private static async readPendingAt<T>(path: string, read: (db: LatticeWasm) => T): Promise<T | null> {
         let memfsHasIt = false;
         try {
             memfsHasIt = !!wasmModule.FS?.analyzePath?.(path)?.exists;
@@ -719,12 +823,9 @@ export class Lattice {
             return null;
         }
         try {
-            // The unshipped set (owed upstream) — see types.ts; the JS-side
-            // select is the belt (order, dedupe, isSynchronized).
-            return selectPendingUploads(db.getUnshippedAuditLog(), options);
-        } catch (err) {
-            console.warn('[Lattice] reading pending uploads failed for', path, err);
-            return [];
+            // Reading/capability failures propagate: never disguise them as
+            // an empty pending set or retry through lossy legacy conversion.
+            return read(db);
         } finally {
             // releaseStorage() drops the audit open\'s ONLY reference — the
             // sqlite connection actually closes (embind .delete() alone frees
@@ -799,8 +900,11 @@ export class Lattice {
             throw new Error(`${modelClass.name} has no C++ backing - was WASM loaded before creating this object?`);
         }
 
-        // Add to database - this makes dynObj managed and assigns id/globalId
-        this.db.addObject(tableName, dynObj);
+        // Add makes dynObj managed and assigns id/globalId. Embind returns a
+        // separate owning wrapper for the same object; keep the instance's
+        // original wrapper and release only the redundant returned handle.
+        const added = this.db.addObject(tableName, dynObj);
+        if (added && added !== dynObj) added.delete?.();
 
         // Store lattice reference for link/list resolution
         (instance as any)[LATTICE_REF] = this;
@@ -814,12 +918,15 @@ export class Lattice {
      */
     async find<T>(modelClass: ModelConstructor<T>, id: number): Promise<T | null> {
         const tableName = getTableName(modelClass);
-        const numId = typeof id === 'bigint' ? Number(id) : id;
+        const numId = isExplicitModel(modelClass) ? checkedRowId(id) : typeof id === 'bigint' ? Number(id) : id;
 
         // Use findObject to get a JsDynamicObject with proper C++ backing
         // This is necessary for lists to work (they need to call C++ getLinkList)
         const dynObj = this.db.findObject(tableName, numId);
-        if (!dynObj || !dynObj.isValid()) return null;
+        if (!dynObj || !dynObj.isValid()) {
+            dynObj?.delete?.();
+            return null;
+        }
 
         return this.dynObjToInstance(modelClass, dynObj);
     }
@@ -828,6 +935,9 @@ export class Lattice {
      * Find an object by its global ID.
      */
     async findByGlobalId<T>(modelClass: ModelConstructor<T>, globalId: string): Promise<T | null> {
+        if (isExplicitModel(modelClass)) {
+            throw new Error('findByGlobalId is not supported for explicit models; use find with a checked row ID');
+        }
         const tableName = getTableName(modelClass);
         const data = this.db.findByGlobalId(tableName, globalId);
         if (!data) return null;
@@ -885,7 +995,9 @@ export class Lattice {
         }
     ): Promise<T[]> {
         const tableName = getTableName(modelClass);
-        const data = this.db.objects(
+        const query = isExplicitModel(modelClass) ? this.db.objectIdentities : this.db.objects;
+        if (typeof query !== 'function') throw new Error('Explicit model queries require the objectIdentities runtime capability');
+        const data = query.call(this.db,
             tableName,
             options?.where ?? null,
             options?.orderBy ?? null,
@@ -912,7 +1024,7 @@ export class Lattice {
      */
     async remove<T>(modelClass: ModelConstructor<T>, id: number): Promise<boolean> {
         const tableName = getTableName(modelClass);
-        const numId = typeof id === 'bigint' ? Number(id) : id;
+        const numId = isExplicitModel(modelClass) ? checkedRowId(id) : typeof id === 'bigint' ? Number(id) : id;
         return this.db.remove(tableName, numId);
     }
 
@@ -924,6 +1036,12 @@ export class Lattice {
      */
     async addAll<T extends LatticeObject>(instances: T[]): Promise<T[]> {
         if (instances.length === 0) return [];
+        // addBulk currently converts plain JS objects, not DynamicObject-backed
+        // fields. Refuse the entire batch before any native call, including a
+        // mixed batch whose first model happens to use legacy decorators.
+        if (instances.some(instance => isExplicitModel(instance.constructor as ModelConstructor))) {
+            throw new Error('addAll is not supported for explicit models; use add for each model');
+        }
 
         const modelClass = instances[0].constructor as ModelConstructor;
         if (!isModel(modelClass)) {
@@ -1014,6 +1132,109 @@ export class Lattice {
      */
     onSyncState(callback: ((info: SyncStateInfo) => void) | null): () => void {
         return this.syncState.subscribe(callback);
+    }
+
+    /** Explicitly reconnect one exclusive native owner without replacing its
+     * store or observers. Concurrent calls share one attempt and the first
+     * deadline. Resolution proves a new transport opened, not replica catch-up
+     * or write acknowledgement. No automatic retry policy is enabled. */
+    reconnectSync(options: LatticeReconnectOptions = {}): Promise<SyncStateInfo> {
+        const timeoutMs = options.timeoutMs ?? 10000;
+        if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 30000)
+            throw new RangeError('Reconnect timeout must be finite milliseconds between 0 and 30000.');
+        this.assertOpen();
+        if (!this.syncConfigured || !this.hasNativeLifecycle() || !this.db.disconnectSync || !this.db.connectSync)
+            throw new Error('Exclusive native reconnect capability is unavailable.');
+        if (this.syncAdmission?.isDisposed) throw new Error('Sync admission owner is closed.');
+        if (this.reconnectPromise) return this.reconnectPromise;
+        const cancellation = new AbortController(), stop = () => cancellation.abort();
+        const externalSignal = this.syncAdmission?.signal;
+        if (externalSignal?.aborted) throw new Error('Sync admission owner is closed.');
+        this.stopWaits.add(stop); externalSignal?.addEventListener('abort', stop, { once: true });
+        const deadline = performance.now() + timeoutMs;
+        const remaining = () => {
+            this.assertOpen();
+            if (cancellation.signal.aborted || this.syncAdmission?.isDisposed) throw new Error('Sync reconnect cancelled.');
+            const value = deadline - performance.now();
+            if (value <= 0) throw new Error('Sync reconnect timed out.');
+            return value;
+        };
+        let off = () => {}, attemptedConnect = false;
+        const operation = (async () => {
+            try {
+                // Never disconnect inside a native observer/transport callback.
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                remaining();
+                const oldSocket = this.db.getSyncSocket!();
+                if (!oldSocket) throw new Error('Sync transport is unavailable.');
+                // Native rejects shared/released/executing owners before any
+                // mutation. If a later transport operation throws, conservatively
+                // retire this wrapper's connected claim; its sibling is untouched.
+                try { this.db.disconnectSync!(); }
+                catch (error) { this.syncState.fail(); throw error; }
+                this.adoptSyncSocket(oldSocket);
+                if (!this.reconnectStateSuppressed) this.syncState.bind(oldSocket); // Publish stale even if the transport detached its native handlers.
+                const generation = this.syncState.state.connectionGeneration;
+                const closed = this.syncAdmission ?
+                    await this.syncAdmission.waitForClose(remaining(), cancellation.signal) :
+                    await waitForSyncSocketsClosed([oldSocket], remaining(), cancellation.signal);
+                remaining();
+                if (closed !== 'closed') throw new Error('Previous sync transport closure is unknown.');
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                remaining();
+                let finish!: (error?: unknown, value?: SyncStateInfo) => void;
+                const openTimeoutMs = remaining();
+                const opening = new Promise<SyncStateInfo>((resolve, reject) => {
+                    let settled = false;
+                    const cancel = () => finish(new Error('Sync reconnect cancelled.'));
+                    const timer = setTimeout(() => finish(new Error('Sync reconnect timed out.')), openTimeoutMs);
+                    finish = (error, value) => {
+                        if (settled) return;
+                        settled = true; clearTimeout(timer); cancellation.signal.removeEventListener('abort', cancel);
+                        if (error !== undefined) reject(error); else resolve(value!);
+                    };
+                    cancellation.signal.addEventListener('abort', cancel, { once: true });
+                    off = this.syncState.subscribeInternal(info => {
+                        if (info.connectionGeneration <= generation) return;
+                        if (info.state === 'open') {
+                            try { remaining(); finish(undefined, info); } catch (error) { finish(error); }
+                        } else if (info.state === 'closed' || info.state === 'error') finish(new Error('Sync reconnect did not open.'));
+                    });
+                });
+                try {
+                    remaining(); attemptedConnect = true;
+                    this.reconnectStateSuppressed = false;
+                    this.db.connectSync!(); // Recheck exclusive ownership after the asynchronous close barrier.
+                    remaining();
+                    const socket = this.db.getSyncSocket!();
+                    if (!socket || socket === oldSocket) throw new Error('Native reconnect did not replace its transport.');
+                    this.adoptSyncSocket(socket);
+                } catch (error) { finish(error); }
+                const opened = await opening;
+                remaining(); return opened;
+            } catch (error) {
+                // Cancel admission after an open timeout/refusal. Leave physical
+                // tracking intact; no later call may skip its close barrier.
+                if (attemptedConnect && !this.closing) {
+                    // Retire failed state before deferred native cleanup. A queued
+                    // watcher may still update leases, but cannot re-adopt this
+                    // attempt until an explicit retry passes the close barrier.
+                    this.reconnectStateSuppressed = true;
+                    this.syncState.bind(null);
+                    await new Promise<void>(resolve => setTimeout(resolve, 0));
+                    if (!this.closing) {
+                        try { this.db.disconnectSync!(); } catch { /* The failure remains explicit. */ }
+                    }
+                }
+                throw error;
+            } finally {
+                off(); this.stopWaits.delete(stop); externalSignal?.removeEventListener('abort', stop);
+            }
+        })();
+        this.reconnectPromise = operation;
+        const clear = () => { if (this.reconnectPromise === operation) this.reconnectPromise = null; };
+        void operation.then(clear, clear);
+        return operation;
     }
 
     /** Observe sync progress with an idempotent disposer. Legacy WASM only retires JS delivery. */
@@ -1109,6 +1330,15 @@ export class Lattice {
      * Note: This creates a NEW DynamicObject and copies data into it.
      */
     private dataToInstance<T>(modelClass: ModelConstructor<T>, data: Record<string, unknown>): T {
+        if (isExplicitModel(modelClass)) {
+            const id = checkedRowId(data.id);
+            const managed = this.db.findObject(getTableName(modelClass), id);
+            if (!managed?.isValid()) {
+                managed?.delete?.();
+                throw new Error('Explicit model query could not hydrate a managed row');
+            }
+            return hydrateInstance(modelClass, managed, this);
+        }
         // MANAGED hydration first: a query row with an id gets the REAL
         // C++-backed object (same path as find()), so property setters write
         // through to the row (audit triggers → sync history) and LinkLists
@@ -1223,10 +1453,22 @@ export class Lattice {
             const observerId = this.db.observeAuditLog((json: string) => {
                 if (!active()) return;
                 try {
-                    const rawEntries = JSON.parse(json);
+                    const rawEntries = parseSafeAuditJSON(json);
                     const entries: AuditLogEntry[] = rawEntries.map((e: any) => this.parseAuditLogEntry(e));
                     if (active()) callback(entries);
                 } catch (error) { console.error('[Lattice.observe] Failed to parse audit log:', error); }
+            });
+            return () => this.db.removeAuditLogObserver(observerId);
+        });
+    }
+
+    /** Exact native audit JSON for transport/journalling. Never parse/re-encode it with JS Number. */
+    observeAuditFrames(callback: (frame: string) => void): () => void {
+        this.assertOpen();
+        if (typeof this.db.getUnshippedAuditFrames !== 'function') throw new Error('Native exact audit frame capability required');
+        return this.observeWhileOpen(active => {
+            const observerId = this.db.observeAuditLog((frame: string) => {
+                if (active() && typeof frame === 'string') callback(frame);
             });
             return () => this.db.removeAuditLogObserver(observerId);
         });
@@ -1252,6 +1494,27 @@ export class Lattice {
      * Parse a raw audit log entry from JSON into typed AuditLogEntry.
      */
     private parseAuditLogEntry(e: any): AuditLogEntry {
+        assertSafeAuditValue(e);
+        const changedFields = typeof e.changedFields === 'string'
+            ? parseSafeAuditJSON(e.changedFields) : e.changedFields;
+        const changedFieldsNames = typeof e.changedFieldsNames === 'string'
+            ? parseSafeAuditJSON(e.changedFieldsNames) : e.changedFieldsNames;
+        if (Object.hasOwn(e, 'synthesized') && typeof e.synthesized !== 'boolean') throw new TypeError('Invalid synthesized audit marker');
+        let noHistoryNulls: string[] | undefined;
+        if (Object.hasOwn(e, 'noHistoryNulls')) {
+            const names = e.noHistoryNulls;
+            if (!Array.isArray(names) || new Set(names).size !== names.length ||
+                (names.length > 0 && e.operation !== 'INSERT' && e.operation !== 'UPDATE') ||
+                names.some(name => {
+                    if (typeof name !== 'string' || name.length === 0 ||
+                        !Array.isArray(changedFieldsNames) || !changedFieldsNames.includes(name) ||
+                        !changedFields || !Object.hasOwn(changedFields, name)) return true;
+                    const value = changedFields[name];
+                    return value !== null && !(typeof value === 'object' && !Array.isArray(value) &&
+                        value.kind === 4 && Object.hasOwn(value, 'value') && value.value === null);
+                })) throw new TypeError('Invalid noHistoryNulls audit marker');
+            noHistoryNulls = [...names];
+        }
         return {
             id: e.id,
             globalId: e.globalId,
@@ -1259,15 +1522,13 @@ export class Lattice {
             operation: e.operation,
             rowId: e.rowId,
             globalRowId: e.globalRowId,
-            changedFields: typeof e.changedFields === 'string'
-                ? JSON.parse(e.changedFields)
-                : e.changedFields,
-            changedFieldsNames: typeof e.changedFieldsNames === 'string'
-                ? JSON.parse(e.changedFieldsNames)
-                : e.changedFieldsNames,
+            changedFields,
+            changedFieldsNames,
             timestamp: e.timestamp,
             isFromRemote: e.isFromRemote,
             isSynchronized: e.isSynchronized,
+            ...(typeof e.synthesized === 'boolean' ? { synthesized: e.synthesized } : {}),
+            ...(noHistoryNulls === undefined ? {} : { noHistoryNulls }),
         };
     }
 
@@ -1278,9 +1539,10 @@ export class Lattice {
     private getPendingChanges(): AuditLogEntry[] {
         try {
             const json = this.db.getPendingAuditLog();
-            const rawEntries = JSON.parse(json);
+            const rawEntries = parseSafeAuditJSON(json);
             return rawEntries.map((e: any) => this.parseAuditLogEntry(e));
         } catch (e) {
+            if (e instanceof RangeError) throw e;
             console.error('[Lattice.getPendingChanges] Failed:', e);
             return [];
         }
@@ -1291,10 +1553,11 @@ export class Lattice {
      * Used internally to sync changes from other sources.
      */
     private applyRemoteChanges(entries: AuditLogEntry[]): string[] {
+        assertSafeAuditValue(entries);
+        if (typeof this.db.importPendingFrame !== 'function') throw new Error('Native guarded pending import capability required');
         try {
-            const json = JSON.stringify(entries);
-            const resultJson = this.db.applyRemoteChanges(json);
-            return JSON.parse(resultJson);
+            const result = validatePendingImportResult(this.db.importPendingFrame(JSON.stringify(entries)), entries.map(entry => entry.globalId));
+            return [...result.imported, ...result.alreadyPresent];
         } catch (e) {
             console.error('[Lattice.applyRemoteChanges] Failed:', e);
             return [];
@@ -1333,6 +1596,9 @@ export class Lattice {
         const snapshotMs = timeout(options.snapshotTimeoutMs, 2000);
         this.closing = true;
         this.syncState.retire();
+        // Revocation/close cancels admission immediately, before deferred native teardown.
+        this.syncAdmission?.dispose();
+        const admittedTransport = this.syncAdmission?.waitForClose(transportMs);
         for (const stop of [...this.stopWaits]) stop();
         this.housekeepingCleanup?.();
         this.housekeepingCleanup = null;
@@ -1358,13 +1624,16 @@ export class Lattice {
                     const socket = this.db.getSyncSocket!();
                     sockets = socket ? [socket] : [];
                     const disposition = this.db.prepareClose();
-                    transport = !this.syncConfigured ? Promise.resolve('not-configured') :
-                        disposition === 'shared' ? Promise.resolve('shared') : waitForSyncSocketsClosed(sockets, transportMs);
-                } catch { transport = Promise.resolve('unavailable'); }
+                    transport = admittedTransport ?? (!this.syncConfigured ? Promise.resolve('not-configured') :
+                        disposition === 'shared' ? Promise.resolve('shared') : waitForSyncSocketsClosed(sockets, transportMs));
+                } catch { transport = admittedTransport ?? Promise.resolve('unavailable'); }
                 forgetSyncSockets(this.syncSockets);
             } else {
-                transport = this.syncConfigured ? closeSyncSockets(sockets, wasmModule, transportMs) :
-                    Promise.resolve('not-configured');
+                // Preserve native-handler detachment and queued-frame purging
+                // even when physical admission tracking supplies the receipt.
+                const legacyTransport = this.syncConfigured ? closeSyncSockets(sockets, wasmModule, transportMs) :
+                    Promise.resolve('not-configured' as const);
+                transport = admittedTransport ?? legacyTransport;
             }
             this.syncSockets = [];
             let snapshot: LatticeCloseResult['snapshot'] = 'not-persistent';

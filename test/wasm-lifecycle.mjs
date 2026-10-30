@@ -9,6 +9,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { prepareExplicitRuntime } from './explicit-models-wasm.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const options = new Map();
@@ -152,10 +153,15 @@ const diag = () => {
     const value = module._lifecycleDiagnostics();
     return Object.fromEntries(keys.map(key => [key, Number(value[key])]));
 };
+function openVersioned(...args) {
+    const result = module._openVersioned(...args);
+    if (!result.ok) throw new Error(result.error);
+    return result.db;
+}
 function open(store = newPath('store'), sync = false, version) {
     const token = sync ? 'local-fixture-token' : '';
     const db = version === undefined ? new module.Lattice(store, schema, sync ? syncUrl : '', token) :
-        new module.Lattice(store, schema, sync ? syncUrl : '', token, version, null);
+        openVersioned(store, schema, sync ? syncUrl : '', token, version, null);
     handles.add(db);
     return db;
 }
@@ -165,6 +171,10 @@ function dispose(db, explicit = true) {
     db.delete();
     handles.delete(db);
     return result;
+}
+function migrationCall(method, ...args) {
+    const result = module[method](...args);
+    if (!result.ok) throw new Error(result.error);
 }
 function addRows(db, names) {
     db.beginWrite();
@@ -277,6 +287,32 @@ try {
     await turns();
     baseline = diag();
     assert.ok(keys.every(key => Number.isSafeInteger(baseline[key]) && baseline[key] >= 0));
+
+    await test('unknown native descriptor capabilities refuse before opening or migrating a file', async () => {
+        const store = newPath('schema-refusal');
+        const db = open(store);
+        addRows(db, ['preserved']);
+        dispose(db);
+        await turns();
+        const original = module.FS.readFile(store);
+        for (const property of [
+            { name: 'future', type: 'future', kind: 'primitive' },
+            { name: 'future', type: 'string', kind: 'unionType' },
+            { name: 'future', type: 'string', kind: 'primitive', futurePolicy: false },
+            { name: 'future', type: 'object', kind: 'primitive' },
+            { name: 'future', type: 'string', kind: 'primitive', noHistory: 'false' },
+            { name: 'future', type: 'int', kind: 'link', targetTable: table, noHistory: false },
+            { name: 'future', type: 'string', kind: 'union', noHistory: false },
+        ]) {
+            assert.throws(() => openVersioned(store, [{ ...schema[0], properties: [...schema[0].properties, property] }], '', '', 1, null), /Unsupported property|Unsupported record field|boolean/);
+            await turns();
+            assert.deepEqual(module.FS.readFile(store), original, 'Rejected descriptor changed database bytes');
+        }
+        const reopened = open(store);
+        assert.equal(reopened.objects(table, null, null, null, null)[0].name, 'preserved');
+        dispose(reopened);
+        return { rejectedCapabilities: 7, fileUnchanged: true, reopened: true };
+    });
 
     await test('queued table and object unsubscribe suppresses real native delivery', async () => {
         const db = open();
@@ -588,6 +624,135 @@ try {
         });
     }
 
+    await test('versioned open refuses a newer schema through a normal JavaScript Error', async () => {
+        const store = newPath('version-floor');
+        const before = open(store, false, 2);
+        addRows(before, ['preserved']);
+        dispose(before);
+        await turns();
+        assert.throws(() => openVersioned(store, schema, '', '', 1, null), error =>
+            error instanceof Error && /schema version.*newer/i.test(error.message));
+        const after = open(store, false, 2);
+        assert.equal(count(after), 1);
+        dispose(after);
+        return { rejectedWithJSError: true, originalVersionAndDataPreserved: true };
+    });
+
+    await test('named-file migration operations update real SQLite and retire the callback context', async () => {
+        const store = newPath('migration');
+        const migrationSchema = [
+            { tableName: 'MigrationItem', properties: [
+                { name: 'oldValue', type: 'string', kind: 'primitive' },
+                { name: 'newValue', type: 'string', kind: 'primitive' },
+            ] },
+            { tableName: 'MigrationDiscard', properties: [{ name: 'name', type: 'string', kind: 'primitive' }] },
+        ];
+        const before = openVersioned(store, migrationSchema, '', '', 1, null);
+        handles.add(before);
+        before.beginWrite();
+        before.add('MigrationItem', { oldValue: 'keep', newValue: '' });
+        before.add('MigrationDiscard', { name: 'discard' });
+        before.commitWrite();
+        dispose(before);
+        await turns();
+        const nextSchema = [{ ...migrationSchema[0], properties: [...migrationSchema[0].properties,
+            { name: 'detail', type: 'string', kind: 'primitive', nullable: true },
+        ] }, migrationSchema[1]];
+        let pointer;
+        let callbacks = 0;
+        const after = openVersioned(store, nextSchema, '', '', 2, ctx => {
+            ++callbacks;
+            pointer = ctx._ctx_ptr;
+            assert.ok(ctx.pendingChanges.some(change => change.tableName === 'MigrationItem' && change.addedColumns.includes('detail')));
+            migrationCall("_migration_rename_property", pointer, 'MigrationItem', 'oldValue', 'newValue');
+            migrationCall("_migration_execute_sql", pointer, "UPDATE MigrationItem SET oldValue = 'migrated'");
+            migrationCall("_migration_delete_all", pointer, 'MigrationDiscard');
+        });
+        handles.add(after);
+        assert.equal(callbacks, 1);
+        assert.equal(Number(after.debugQueryCount("SELECT id FROM MigrationItem WHERE newValue = 'keep' AND oldValue = 'migrated'")), 1);
+        assert.equal(Number(after.debugQueryCount('SELECT id FROM MigrationDiscard')), 0);
+        assert.throws(() => migrationCall("_migration_execute_sql", pointer, 'DELETE FROM MigrationItem'));
+        assert.equal(Number(after.debugQueryCount('SELECT id FROM MigrationItem')), 1);
+        dispose(after);
+        await turns();
+        assert.throws(() => openVersioned(store, migrationSchema, '', '', 1, null), /version|schema/i);
+        return { callbacks, copiedExistingColumn: true, executedSql: true, deletedRows: true, expiredContextRefused: true, downgradeRefused: true };
+    });
+
+    await test('a throwing JavaScript migration rolls back SQL and expires its context', async () => {
+        const store = newPath('refused-migration');
+        const before = open(store, false, 1);
+        addRows(before, ['before-refusal']);
+        dispose(before);
+        await turns();
+        const nextSchema = [{ ...schema[0], properties: [...schema[0].properties,
+            { name: 'newColumn', type: 'string', kind: 'primitive', nullable: true },
+        ] }];
+        let token;
+        assert.throws(() => openVersioned(store, nextSchema, '', '', 2, ctx => {
+            token = ctx._ctx_ptr;
+            migrationCall("_migration_execute_sql", token, "UPDATE LifecycleItem SET name = 'must-roll-back'");
+            throw new Error('fixture migration refusal');
+        }), /fixture migration refusal/);
+        assert.ok(Number.isInteger(token));
+        assert.throws(() => migrationCall("_migration_delete_all", token, table));
+        await turns();
+        const recovered = open(store, false, 1);
+        assert.equal(Number(recovered.debugQueryCount("SELECT id FROM LifecycleItem WHERE name = 'before-refusal'")), 1);
+        assert.equal(Number(recovered.debugQueryCount("SELECT name FROM pragma_table_info('LifecycleItem') WHERE name = 'newColumn'")), 0);
+        dispose(recovered);
+        return { errorPreserved: true, sqlRolledBack: true, schemaUnchanged: true, reopened: true, expiredContextRefused: true };
+    });
+
+    await test('async migration is refused and its resumed token cannot mutate the store', async () => {
+        const store = newPath('migration-async');
+        const before = open(store, false, 1);
+        addRows(before, ['before']);
+        dispose(before);
+        await turns();
+        const nextSchema = [{ ...schema[0], properties: [...schema[0].properties,
+            { name: 'detail', type: 'string', kind: 'primitive', nullable: true },
+        ] }];
+        let resumedError;
+        assert.throws(() => openVersioned(store, nextSchema, '', '', 2, async ctx => {
+            migrationCall('_migration_execute_sql', ctx._ctx_ptr, "UPDATE LifecycleItem SET name = 'must-roll-back'");
+            await Promise.resolve();
+            try { migrationCall('_migration_delete_all', ctx._ctx_ptr, table); }
+            catch (error) { resumedError = error; }
+        }), /synchronously/);
+        await turns();
+        assert.match(String(resumedError), /no longer active/);
+        const reopened = open(store, false, 1);
+        assert.equal(reopened.objects(table, null, null, null, null)[0].name, 'before');
+        dispose(reopened);
+        return { asyncRefused: true, resumedMutationRefused: true, originalDataPreserved: true };
+    });
+
+    await test('native SQL errors during migration preserve their error and roll back earlier writes', async () => {
+        const store = newPath('migration-sql-error');
+        const before = open(store, false, 1);
+        addRows(before, ['before-sql-error']);
+        dispose(before);
+        await turns();
+        const nextSchema = [{ ...schema[0], properties: [...schema[0].properties,
+            { name: 'afterError', type: 'string', kind: 'primitive', nullable: true },
+        ] }];
+        let token;
+        assert.throws(() => openVersioned(store, nextSchema, '', '', 2, ctx => {
+            token = ctx._ctx_ptr;
+            migrationCall('_migration_execute_sql', token, "UPDATE LifecycleItem SET name = 'must-roll-back'");
+            migrationCall('_migration_execute_sql', token, 'UPDATE MissingMigrationTable SET name = 1');
+        }), /no such table|MissingMigrationTable/);
+        assert.throws(() => migrationCall('_migration_delete_all', token, table), /no longer active/);
+        await turns();
+        const recovered = open(store, false, 1);
+        assert.equal(Number(recovered.debugQueryCount("SELECT id FROM LifecycleItem WHERE name = 'before-sql-error'")), 1);
+        assert.equal(Number(recovered.debugQueryCount("SELECT name FROM pragma_table_info('LifecycleItem') WHERE name = 'afterError'")), 0);
+        dispose(recovered);
+        return { nativeErrorPreserved: true, earlierWriteRolledBack: true, schemaUnchanged: true, reopened: true };
+    });
+
     await test('AuditLog named-file link changes emit every model and junction row exactly once', async () => {
         const linkSchema = [{ ...schema[0], properties: [...schema[0].properties,
             { name: 'children', type: 'object', kind: 'list', targetTable: table },
@@ -616,6 +781,60 @@ try {
         dispose(db);
         return { storedRows: stored.length, observedRows: observed.length, includesJunctionInsert: true };
     });
+    await test('server receive acknowledges duplicate deliveries without replaying or duplicating observations', async () => {
+        const source = open(), target = open();
+        addRows(source, ['received-one', 'received-two']);
+        await turns();
+        const entries = JSON.parse(source.eventsAfter('')).filter(entry => entry.tableName === table);
+        assert.equal(entries.length, 2);
+        const ids = entries.map(entry => entry.globalId);
+        const message = module.createSyncMessage(JSON.stringify(entries));
+        const changes = [], audits = [];
+        const tableObserver = target.observeTable(table, change => changes.push(change));
+        const auditObserver = target.observeAuditLog(json => audits.push(...JSON.parse(json)));
+        assert.deepEqual(JSON.parse(target.receive(message)), ids);
+        await until(() => changes.length === 2 && audits.length === 2, 'committed remote receive observations');
+        assert.equal(count(target), 2);
+        assert.ok(audits.every(entry => entry.isFromRemote && entry.isSynchronized));
+        assert.deepEqual(audits.map(entry => entry.globalId), ids);
+        assert.deepEqual(JSON.parse(target.receive(message)), ids, 'Redelivery must acknowledge already committed IDs');
+        assert.deepEqual(JSON.parse(target.receive('invalid-json')), []);
+        await turns();
+        assert.equal(changes.length, 2, 'Duplicate delivery must not emit another model mutation');
+        assert.equal(audits.length, 2, 'Duplicate delivery must not insert duplicate audit rows');
+        assert.equal(Number(target.debugQueryCount('SELECT id FROM AuditLog')), 2);
+        assert.equal(Number(target.debugQueryCount('SELECT id FROM _SyncControl WHERE disabled=0')), 1);
+        target.removeTableObserver(table, tableObserver);
+        target.removeAuditLogObserver(auditObserver);
+        dispose(target); dispose(source);
+        return { duplicateIDsAcknowledged: true, duplicateEffectsSuppressed: true, postCommitObservation: true, malformedFrameReturnsEmpty: true, triggerGateRestored: true };
+    });
+
+    await test('server receive applies acknowledgments without emitting an acknowledgment echo', async () => {
+        const db = open();
+        addRows(db, ['awaiting-ack']);
+        await turns();
+        const entries = JSON.parse(db.eventsAfter('')).filter(entry => entry.tableName === table);
+        assert.equal(entries.length, 1);
+        const ids = entries.map(entry => entry.globalId);
+        assert.equal(Number(db.getPendingSyncUploadCount()), 1);
+        const changes = [];
+        const observer = db.observeTable('AuditLog', change => changes.push(change));
+        const ack = module.createAckMessage(JSON.stringify(ids));
+        assert.deepEqual(JSON.parse(db.receive(ack)), [], 'ACK frames must never be acknowledged in return');
+        await until(() => changes.some(change => change.operation === 'UPDATE'), 'ACK bookkeeping observation');
+        assert.equal(Number(db.getPendingSyncUploadCount()), 0);
+        assert.equal(Number(db.debugQueryCount('SELECT id FROM AuditLog WHERE isSynchronized=1')), 1);
+        assert.deepEqual(JSON.parse(db.receive(ack)), []);
+        assert.equal(count(db), 1);
+        db.removeTableObserver('AuditLog', observer);
+        dispose(db);
+        return { ackReturnsNoIDs: true, repeatedAckReturnsNoIDs: true, uploadBookkeepingApplied: true, auditUpdateObserved: true };
+    });
+
+    const explicitRuntime = await prepareExplicitRuntime(path.dirname(output));
+    receipt.explicitModels = explicitRuntime.receipt;
+    await explicitRuntime.run({ module, test, newPath, register: db => handles.add(db), dispose });
 } catch (error) {
     failure = error?.stack ?? String(error);
 } finally {
@@ -628,7 +847,7 @@ try {
     process.off('uncaughtException', onAsyncError);
     process.off('unhandledRejection', onAsyncError);
     Object.assign(console, oldConsole);
-    const passed = !failure && asyncErrors.length === 0 && fatalLogs.length === 0 && reports.length === 16 && reports.every(test => test.passed);
+    const passed = !failure && asyncErrors.length === 0 && fatalLogs.length === 0 && reports.length === 45 && reports.every(test => test.passed);
     const result = {
         passed, scope, receipt, baseline, final: diag(), elapsedMs: performance.now() - started,
         tests: reports, failure, asyncErrors, fatalLogs,
