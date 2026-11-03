@@ -1,3 +1,4 @@
+import * as scoped from './scoped-capture';
 // Main Lattice class - user-facing API
 import type { SchemaEntry, ModelConstructor, LatticeObject, LatticeWasm, LatticeWasmModule, CollectionChange, SyncProgress, SyncFilter, MigrationContext, TableChanges, SyncStateInfo, LatticeCloseOptions, LatticeCloseResult, LatticeReconnectOptions, SyncConfiguration } from './types';
 import { buildSchemas, getTableName, isModel, getPropertySchemas, hydrateInstance } from './decorators';
@@ -132,6 +133,7 @@ export class Lattice {
 
     private syncObserverId: (() => void) | null = null;
     private closing = false;
+    private openedReadEpoch: object = Object.freeze({});
     private socketWatchId: number | null = null;
     private readonly stopWaits = new Set<() => void>();
     private closePromise: Promise<LatticeCloseResult> | null = null;
@@ -710,6 +712,19 @@ export class Lattice {
         this.assertOpen();
         return captureDetachedValues(this.db, selectors);
     }
+
+    /** Opaque opened-handle lifetime, retired synchronously at close admission. */
+    get readEpoch(): object { return this.openedReadEpoch; }
+    get scopedCaptureVersion(): 1 | undefined {
+        return !this.closing && this.db.scopedCaptureVersion?.() === 1 ? 1 : undefined;
+    }
+    captureByIDsSync(request: scoped.ScopedIDRequest): scoped.ScopedCapture {
+        this.assertOpen(); return scoped.captureByIDsSync(this.db, request);
+    }
+    captureByIndexedUUIDSync(request: scoped.ScopedIndexedRequest): scoped.ScopedPage {
+        this.assertOpen(); return scoped.captureByIndexedUUIDSync(this.db, request);
+    }
+    readFenceSync(): scoped.AuditReadFence { this.assertOpen(); return scoped.readFenceSync(this.db); }
 
     /** Read-only exact audit frames for journalling/rescue; payloads must remain opaque. */
     static async pendingUploadFrames(path: string, options?: PendingSelectOptions, maxEntries = 200): Promise<readonly PendingAuditFrame[] | null> {
@@ -1595,6 +1610,7 @@ export class Lattice {
         const transportMs = timeout(options.transportTimeoutMs, 2000);
         const snapshotMs = timeout(options.snapshotTimeoutMs, 2000);
         this.closing = true;
+        this.openedReadEpoch = Object.freeze({});
         this.syncState.retire();
         // Revocation/close cancels admission immediately, before deferred native teardown.
         this.syncAdmission?.dispose();

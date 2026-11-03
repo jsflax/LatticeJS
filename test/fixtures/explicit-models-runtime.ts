@@ -1,3 +1,4 @@
+import { runScopedCaptureCases } from './scoped-capture-runtime';
 // Bundled by the actual-WASM harness. Native objects/database handles are real;
 // the TS facade only reuses the already-open, receipt-hashed module instance.
 import assert from 'node:assert/strict';
@@ -191,4 +192,5 @@ export async function runExplicitModelCases({ module, test, newPath, register, d
     await runExplicitNoHistoryCases({ module, test, newPath, register, dispose });
     await runPendingFrameCases({ module, test, newPath, register, dispose });
     await runCaptureValueCases({ module, test, newPath, register, dispose });
+    await runScopedCaptureCases({ module, test, newPath, register, dispose });
 }

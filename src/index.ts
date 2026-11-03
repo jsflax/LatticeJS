@@ -58,3 +58,5 @@ export type {
 } from './types';
 
 export type { CaptureSelector, CapturedLink, CapturedValue, CapturedRow, CapturedValues } from './capture-values';
+
+export type { AuditReadFence, ScopedIDRequest, ScopedIndexedRequest, ScopedValue, ScopedRow, ScopedIndexedRow, ScopedCapture, ScopedPage } from './scoped-capture';

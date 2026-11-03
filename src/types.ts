@@ -1,3 +1,4 @@
+import type { ScopedNative } from './scoped-capture';
 // Core types for LatticeJS
 
 export type ColumnType = 'string' | 'int' | 'float' | 'bool' | 'blob' | 'date';
@@ -103,7 +104,7 @@ export interface LatticeWasmModule {
     syncAdmissionVersion?: () => number;
 }
 
-export interface LatticeWasm {
+export interface LatticeWasm extends ScopedNative {
     add(tableName: string, obj: Record<string, any>): number;
     addObject(tableName: string, dynamicObject: any): any;
     createObject(tableName: string): any; // Returns DynamicObject

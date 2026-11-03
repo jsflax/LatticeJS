@@ -19,6 +19,7 @@
 #include <list.hpp>
 #include <lattice/sync.hpp>
 #include "capture-values.hpp"
+#include "scoped-capture.hpp"
 
 #include <sys/stat.h>
 
@@ -1827,6 +1828,79 @@ public:
         return decoded["value"];
     }
 
+    static val scopedFence(const lattice::audit_read_fence& input) {
+        val result=val::object();result.set("head",input.cursor.head);result.set("floor",input.cursor.floor);
+        result.set("headGlobalID",input.cursor.head==0?val::null():val(input.cursor.head_global_id));
+        result.set("historyGeneration",input.has_history_generation?val(input.history_generation):val::null());return result;
+    }
+    static val scopedResult(const lattice::detached_read::result& input,bool indexed) {
+        val rows=val::array();
+        for(const auto& row:input.rows) {
+            val fields=val::global("Object").call<val>("create",val::null());
+            for(const auto& [key,cell]:row.values) {
+                fields.set(key,std::visit([](const auto& value)->val {
+                    using T=std::decay_t<decltype(value)>;
+                    if constexpr(std::is_same_v<T,std::nullptr_t>)return val::null();
+                    else if constexpr(std::is_same_v<T,std::vector<uint8_t>>) {
+                        val copy=val::global("Uint8Array").new_(value.size());
+                        if(!value.empty())copy.call<void>("set",val(typed_memory_view(value.size(),value.data())));
+                        return copy; // owns JS backing storage, never exports this temporary Wasm view
+                    } else return val(value);
+                },cell));
+            }
+            val copy=val::object();copy.set("table",row.table);copy.set("globalId",row.global_id);copy.set("values",fields);
+            if(indexed)copy.set("id",row.id);rows.call<void>("push",copy);
+        }
+        val result=val::object();result.set("formatVersion",1);result.set("rows",rows);result.set("fence",scopedFence(input.fence));
+        if(indexed) {result.set("hasMore",input.has_more);result.set("nextID",input.next_id?val(input.next_id):val::null());}
+        return result;
+    }
+    static std::string scopedName(const val& value) {
+        if(!value.isString()||value["length"].as<size_t>()>128)throw std::invalid_argument("Invalid scoped identifier");
+        auto result=value.as<std::string>();if(!lattice::detached_read::identifier(result))throw std::invalid_argument("Invalid scoped identifier");return result;
+    }
+    static std::string scopedUUID(const val& value) {
+        if(!value.isString()||value["length"].as<size_t>()!=36)throw std::invalid_argument("Invalid scoped UUID");
+        auto result=value.as<std::string>();if(!lattice::detached_read::uuid(result))throw std::invalid_argument("Invalid scoped UUID");return result;
+    }
+    static void scopedSelection(const val& input,lattice::detached_read::selection& copied) {
+        copied.table=scopedName(input["table"]);const auto properties=input["properties"];
+        const auto count=bounded_array(properties,lattice::detached_read::max_fields);
+        for(size_t i=0;i<count;++i)copied.properties.push_back(scopedName(properties[i]));
+    }
+    val captureByIDsSync(const val& input) {
+        static const std::unordered_set<std::string> keys{"table","properties","globalIDs"};
+        if(record_fields(input,&keys).size()!=keys.size())throw std::invalid_argument("Invalid scoped exact request");
+        lattice::detached_read::exact_request copied;scopedSelection(input,copied);
+        const auto ids=input["globalIDs"];const auto count=bounded_array(ids,lattice::detached_read::max_ids);
+        for(size_t i=0;i<count;++i)copied.global_ids.push_back(scopedUUID(ids[i]));
+        if(!ref_)throw std::runtime_error("Scoped read requires an open database");
+        const auto result=lattice_js_scoped::by_ids(swift_lattice_ref::shared_for_lattice(ref_->get()),copied);
+        return scopedResult(result,false);
+    }
+    val captureByIndexedUUIDSync(const val& input) {
+        static const std::unordered_set<std::string> keys{"table","properties","property","equalTo","afterID","limit"};
+        if(record_fields(input,&keys).size()!=keys.size())throw std::invalid_argument("Invalid scoped indexed request");
+        lattice::detached_read::indexed_request copied;scopedSelection(input,copied);
+        copied.property=scopedName(input["property"]);copied.equal_to=scopedUUID(input["equalTo"]);
+        const auto after=input["afterID"];
+        if(after.typeOf().as<std::string>()!="bigint")throw std::invalid_argument("Scoped afterID requires BigInt");
+        const auto digits=after.call<std::string>("toString");
+        if(digits.empty()||digits.size()>19||digits.find_first_not_of("0123456789")!=std::string::npos||
+           (digits.size()==19&&digits>"9223372036854775807"))throw std::invalid_argument("Invalid scoped afterID");
+        copied.after_id=std::stoll(digits);
+        const auto limit=input["limit"];if(limit.typeOf().as<std::string>()!="number")throw std::invalid_argument("Invalid scoped limit");
+        const auto number=limit.as<double>();if(!std::isfinite(number)||std::floor(number)!=number||number<1||number>256)throw std::invalid_argument("Invalid scoped limit");
+        copied.limit=static_cast<size_t>(number);
+        if(!ref_)throw std::runtime_error("Scoped read requires an open database");
+        const auto result=lattice_js_scoped::by_index(swift_lattice_ref::shared_for_lattice(ref_->get()),copied);
+        return scopedResult(result,true);
+    }
+    val readFenceSync() {
+        if(!ref_)throw std::runtime_error("Scoped fence requires an open database");
+        const auto result=lattice_js_scoped::fence(swift_lattice_ref::shared_for_lattice(ref_->get()));return scopedFence(result);
+    }
+
     // Explicit-model callers hydrate managed rows by identity. They must not
     // recursively materialize linked graphs through the legacy plain converter.
     val objectIdentities(const std::string& table_name,
@@ -3027,7 +3101,7 @@ EM_JS(void, install_object_result_wrappers, (), {
         'setInt', 'setString', 'setDouble', 'setBool', 'setData', 'setNil',
         'getObject', 'setObject', 'getLinkList', 'getUnion', 'setUnion'
     ]);
-    install(Module['Lattice'].prototype, ['addObject', 'objectIdentities', 'getUnshippedAuditFrames', 'importPendingFrame', 'captureValuesSync']);
+    install(Module['Lattice'].prototype, ['addObject', 'objectIdentities', 'getUnshippedAuditFrames', 'importPendingFrame', 'captureValuesSync', 'captureByIDsSync', 'captureByIndexedUUIDSync', 'readFenceSync']);
 });
 
 EMSCRIPTEN_BINDINGS(lattice) {
@@ -3146,6 +3220,16 @@ EMSCRIPTEN_BINDINGS(lattice) {
         }))
         .function("_result_captureValuesSync", optional_override([](JsLattice& database, const val& selectors) {
             return object_operation_result([&] { return database.captureValuesSync(selectors); });
+        }))
+        .function("scopedCaptureVersion", optional_override([](JsLattice&) { return lattice_js_scoped::version(); }))
+        .function("_result_captureByIDsSync", optional_override([](JsLattice& database,const val& request) {
+            return object_operation_result([&] {return database.captureByIDsSync(request);});
+        }))
+        .function("_result_captureByIndexedUUIDSync", optional_override([](JsLattice& database,const val& request) {
+            return object_operation_result([&] {return database.captureByIndexedUUIDSync(request);});
+        }))
+        .function("_result_readFenceSync", optional_override([](JsLattice& database) {
+            return object_operation_result([&] {return database.readFenceSync();});
         }))
         .function("count", &JsLattice::count)
         .function("remove", &JsLattice::remove)
