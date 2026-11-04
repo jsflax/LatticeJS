@@ -232,9 +232,26 @@ export async function runExplicitUnionCases({ module, test, newPath, register, d
             const extra = own(new Row({ name: 'insert-delete', action: noop(), optional: { case: 'message', fields: { _0: 'owned' } }, exact: precise }));
             await source.db.add(extra);
             const ownedReference = extra[DYNAMIC_OBJECT].getString('optional');
-            const inserted = events(source).filter((entry: any) => entry.tableName === 'ExplicitUnion' && entry.globalRowId === extra.globalId && entry.operation === 'INSERT');
-            assert.equal(inserted.length, 1); assert.equal(inserted[0].changedFields.optional.value, ownedReference);
+            const added = events(source);
+            const inserted = added.filter((entry: any) => entry.tableName === 'ExplicitUnion' && entry.globalRowId === extra.globalId && entry.operation === 'INSERT');
+            // addObject inserts the parent first, then persists each staged union and updates its reference.
+            assert.equal(inserted.length, 1);
+            assert.ok(Object.prototype.hasOwnProperty.call(inserted[0].changedFields, 'optional'));
+            assert.ok(inserted[0].changedFieldsNames.includes('optional'));
+            assert.equal(inserted[0].changedFields.optional.value, null);
             assert.equal(inserted[0].changedFields.exact.value, precise);
+            const referenceInserted = added.filter((entry: any) => entry.tableName === 'ExplicitUnion' && entry.globalRowId === extra.globalId && entry.operation === 'UPDATE' && entry.changedFieldsNames.includes('optional'));
+            assert.equal(referenceInserted.length, 1);
+            assert.equal(referenceInserted[0].changedFields.optional.value, ownedReference);
+            const ownedUnionInserted = added.filter((entry: any) => entry.tableName === '_ExplicitUnionValue' && entry.globalRowId === ownedReference && entry.operation === 'INSERT');
+            assert.equal(ownedUnionInserted.length, 1);
+            assert.ok(added.indexOf(inserted[0]) < added.indexOf(ownedUnionInserted[0]));
+            assert.ok(added.indexOf(ownedUnionInserted[0]) < added.indexOf(referenceInserted[0]));
+            assert.deepEqual(receive(peer, added), added.map((entry: any) => entry.globalId));
+            const addedPeer = await read(peer, extra.id);
+            assert.equal(addedPeer.globalId, extra.globalId);
+            assert.deepEqual(addedPeer.optional, extra.optional);
+            assert.equal(addedPeer[DYNAMIC_OBJECT].getString('optional'), ownedReference);
             const extraID = extra.id, extraGlobalID = extra.globalId;
             assert.equal(await source.db.remove(Row, extraID), true);
             const deleted = events(source).filter((entry: any) => entry.tableName === 'ExplicitUnion' && entry.globalRowId === extraGlobalID && entry.operation === 'DELETE');
