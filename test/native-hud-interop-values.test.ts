@@ -99,7 +99,7 @@ describe('native HUD current invocation input admission', () => {
     });
     it('keeps direct and Q2 roots and exact admitted row prefixes distinct', () => {
         const native = '/fixture/localdev/qualification/Sources/HUD';
-        const identity = (value: string) => value;
+        const identity = (value: string) => path.resolve(value);
         const direct = { version: 1, root: native };
         const q2 = { version: 1, root: '/fixture/localdev/qualification' };
         expect(nativeSourcePrefix(direct, native, 'direct-checkout', identity)).toBe('');
