@@ -99,3 +99,28 @@ jobs:
 
       - name: Typecheck public API
         run: cd "$LATTICE_CI_SOURCE" && npm run build:ts
+
+      - name: Record matched build provenance
+        run: |
+          set -euo pipefail
+          cd "$LATTICE_CI_SOURCE"
+          git rev-parse HEAD > wasm/build/LATTICEJS_COMMIT
+          core_commit=$(git -C LatticeCore rev-parse HEAD)
+          node -e 'const fs=require("node:fs"); const info=JSON.parse(fs.readFileSync("wasm/build/BUILD_INFO.json","utf8")); if(info.latticecoreCommit!==process.argv[1]) throw Error("Core build provenance changed");' "$core_commit"
+          cp package-lock.json wasm/build/package-lock.json
+          cd wasm/build
+          sha256sum lattice.js lattice.wasm BUILD_INFO.json LATTICEJS_COMMIT package-lock.json > MATCHED_PAIR.sha256
+
+      - name: Preserve matched JS and Wasm build
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattice-js-wasm-${{ github.sha }}
+          path: |
+            ${{ env.LATTICE_CI_SOURCE }}/wasm/build/lattice.js
+            ${{ env.LATTICE_CI_SOURCE }}/wasm/build/lattice.wasm
+            ${{ env.LATTICE_CI_SOURCE }}/wasm/build/BUILD_INFO.json
+            ${{ env.LATTICE_CI_SOURCE }}/wasm/build/LATTICEJS_COMMIT
+            ${{ env.LATTICE_CI_SOURCE }}/wasm/build/package-lock.json
+            ${{ env.LATTICE_CI_SOURCE }}/wasm/build/MATCHED_PAIR.sha256
+          if-no-files-found: error
+          retention-days: 14

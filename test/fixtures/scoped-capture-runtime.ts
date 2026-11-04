@@ -78,4 +78,20 @@ export async function runScopedCaptureCases({ module, test, newPath, register, d
     const closed=new module.Lattice(newPath('scoped-closed'),buildSchemas([defineModels(definition).ScopedChunk]));register(closed);
     try {closed.releaseStorage();assert.throws(()=>readFenceSync(closed),/open database|open owner/);}finally {dispose(closed);}
   }));
+  await test('scoped empty queries differ from closed-owner failures on both native request paths', async () => {
+    const { ScopedChunk: Row } = defineModels(definition);
+    const native = new module.Lattice(newPath('scoped-empty-closed'), buildSchemas([Row])); register(native);
+    const byIDs = { table: 'ScopedChunk', properties: ['ordinal'], globalIDs: [ownerID] };
+    const indexed = { table: 'ScopedChunk', properties: ['ordinal'], property: 'ownerID', equalTo: ownerID, afterID: 0n, limit: 1 };
+    try {
+      assert.deepEqual(captureByIDsSync(native, byIDs).rows, []);
+      assert.deepEqual(captureByIndexedUUIDSync(native, indexed).rows, []);
+      assert.throws(() => captureByIDsSync(native, { ...byIDs, table: 'Missing' }), /registered/);
+      assert.deepEqual(captureByIDsSync(native, byIDs).rows, [], 'Refused query must not poison the healthy owner');
+      native.releaseStorage();
+      for (const query of [() => captureByIDsSync(native, byIDs), () => captureByIndexedUUIDSync(native, indexed)]) {
+        assert.throws(query, error => error instanceof Error && /open database|open owner/.test(error.message));
+      }
+    } finally { dispose(native); }
+  });
 }
