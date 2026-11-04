@@ -32,8 +32,19 @@ export function fromDoubleBits(bits: unknown): number {
     assert.ok(Number.isFinite(value), 'Nonfinite fixture value');
     return value;
 }
+export function blobBytes(text: unknown): Uint8Array {
+    assert.equal(typeof text, 'string', 'Native BLOB must remain lowercase hex text');
+    assert.equal((text as string).length % 2, 0, 'BLOB requires two hex digits per byte');
+    assert.doesNotMatch(text as string, /[^0-9a-f]/, 'BLOB requires lowercase hex without whitespace');
+    const bytes = new Uint8Array((text as string).length / 2);
+    for (let index = 0; index < bytes.length; ++index) {
+        bytes[index] = Number.parseInt((text as string).slice(index * 2, index * 2 + 2), 16);
+    }
+    return bytes;
+}
 export function scalar(cell: Cell, type: string): unknown {
     if (cell.kind === 'null') return null;
+    if (cell.kind === 'blob') { assert.equal(type, 'blob'); return blobBytes(cell.value); }
     if (cell.kind === 'int64') {
         const value = integer(cell.value);
         if (type === 'bool') { assert.ok(value === 0n || value === 1n); return value === 1n; }
@@ -49,6 +60,10 @@ export function scalar(cell: Cell, type: string): unknown {
 export function assertScalar(actual: unknown, cell: Cell, type: string, label: string): void {
     const expected = scalar(cell, type);
     if (typeof expected === 'number') assert.equal(doubleBits(actual as number), cell.bits, label);
+    else if (expected instanceof Uint8Array) {
+        assert.ok(actual instanceof Uint8Array, `${label}: expected Uint8Array, not text/array/null`);
+        assert.deepEqual(actual, expected, label);
+    }
     else assert.equal(actual, expected, label);
 }
 

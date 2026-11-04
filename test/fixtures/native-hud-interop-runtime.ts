@@ -8,18 +8,84 @@ import { DYNAMIC_OBJECT, setWasmModule } from '../../src/storage';
 import { Lattice } from '../../src/lattice';
 import { assertScalar, expectedUnion, integer, mutationUnion, rowID, scalar, type Cell } from './native-hud-interop-values';
 
+// Fixture write policy only; all model/property/type declarations still come from
+// the actual native export through createHUDLatticeDefinition/defineModels.
+const immutableExpandedTables = ['HUDAsset', 'HUDAssetChunk', 'HUDSVGResourcePackage',
+    'HUDSVGResourceBindingRow', 'HUDSVGFontVariationRow', 'HUDNativeViewTopicRow', 'HUDNativeViewPayloadRow'];
+const referenceExpandedTables = ['HUDAssetAttachment', 'HUDNativeViewBindingRow'];
+const expandedTables = [...immutableExpandedTables, ...referenceExpandedTables];
+
+function expandedFixtureCoverage(manifest: any, contract: any): { models: number; nullableProperties: number } {
+    const models = contract.storage.models.filter((model: any) => expandedTables.includes(model.name));
+    assert.deepEqual(models.map((model: any) => model.name).sort(), [...expandedTables].sort());
+    let nullableProperties = 0;
+    for (const model of models) {
+        const rows = manifest.baseline.rows.filter((row: any) => row.table === model.name);
+        assert.ok(rows.length > 0, `Unseeded expanded model ${model.name}`);
+        for (const property of model.properties.filter((prop: any) => prop.logicalType.nullable)) {
+            const cells = rows.map((row: any) => row.fields[property.name]);
+            assert.ok(cells.every((cell: any) => cell && typeof cell.kind === 'string'), `Missing ${model.name}.${property.name}`);
+            assert.ok(cells.some((cell: Cell) => cell.kind === 'null') && cells.some((cell: Cell) => cell.kind !== 'null'),
+                `Native fixture must cover both nullable states for ${model.name}.${property.name}`);
+            ++nullableProperties;
+        }
+    }
+    assert.equal(nullableProperties, 25, 'Format2 expanded-model nullable coverage changed');
+    const expandedMutations = manifest.mutations.filter((item: any) => expandedTables.includes(item.ownerTable));
+    assert.equal(manifest.mutations.length, 13, 'Retain the original eleven mutations and exactly two reference tombstones');
+    assert.equal(expandedMutations.length, 2);
+    assert.deepEqual(expandedMutations.map((item: any) => item.ownerTable).sort(), [...referenceExpandedTables].sort());
+    for (const mutation of expandedMutations) {
+        assert.equal(mutation.property, 'deletedAt', 'Expanded rows only authorize reference tombstones');
+        assert.equal(mutation.values.length, 1);
+        assert.equal(mutation.values[0].kind, 'unixSeconds');
+        scalar(mutation.values[0], 'date');
+        const before = manifest.baseline.rows.find((row: any) => row.table === mutation.ownerTable && row.globalId === mutation.ownerGlobalId);
+        const after = manifest.expectedReturned.rows.find((row: any) => row.table === mutation.ownerTable && row.globalId === mutation.ownerGlobalId);
+        assert.ok(before && after, 'Reference tombstone requires an existing native identity');
+        assert.equal(before.fields.deletedAt.kind, 'null', 'Do not mutate an already-retired reference');
+        assert.deepEqual(after.fields.deletedAt, mutation.values[0], 'Reference oracle does not match its planned tombstone');
+    }
+    for (const table of expandedTables) {
+        const before = manifest.baseline.rows.filter((row: any) => row.table === table);
+        const after = manifest.expectedReturned.rows.filter((row: any) => row.table === table);
+        assert.equal(after.length, before.length, `Expanded table cannot add/remove rows: ${table}`);
+        assert.equal(new Set(before.map((row: any) => row.globalId)).size, before.length, `Duplicate baseline identity: ${table}`);
+        assert.equal(new Set(after.map((row: any) => row.globalId)).size, after.length, `Duplicate returned identity: ${table}`);
+        for (const old of before) {
+            const changed = after.find((row: any) => row.globalId === old.globalId);
+            assert.ok(changed, `Expanded identity disappeared: ${table}`);
+            const mutation = expandedMutations.find((item: any) => item.ownerTable === table && item.ownerGlobalId === old.globalId);
+            assert.deepEqual(changed, mutation ? { ...old, fields: { ...old.fields, deletedAt: mutation.values[0] } } : old,
+                `Native oracle changes expanded row outside its allowed tombstone: ${table}`);
+        }
+    }
+    // These are native-reference audit expectations, not observations of the
+    // Wasm audit. The existing separate Swift return verifier checks that audit.
+    assert.ok(Array.isArray(manifest.nativeMutationAudit));
+    const expandedAudit = manifest.nativeMutationAudit.filter((entry: any) => expandedTables.includes(entry.table));
+    assert.equal(expandedAudit.length, 2);
+    assert.deepEqual(expandedAudit.map((entry: any) => entry.table).sort(), [...referenceExpandedTables].sort());
+    for (const entry of expandedAudit) {
+        assert.equal(entry.operation, 'UPDATE');
+        assert.deepEqual(entry.names, ['deletedAt']);
+    }
+    return { models: models.length, nullableProperties };
+}
+
 export function prepareNativeHUDInterop(manifest: any, contract: any) {
-    assert.equal(manifest.formatVersion, 1);
+    assert.equal(manifest.formatVersion, 2, 'Format1 evidence requires its preserved original consumer');
     assert.equal(contract.formatVersion, 1);
     assert.equal(HUD_REGISTRY_HASH, manifest.registryHash, 'Generated Browser registry differs from native fixture');
     assert.equal(contract.registryHash, manifest.registryHash);
     const definition = createHUDLatticeDefinition();
     assert.deepEqual(definition, createHUDLatticeDefinition(contract.storage), 'Generated storage differs from actual native fixture');
-    assert.equal(definition.models.length, 8);
+    assert.equal(definition.models.length, 17);
     assert.equal(contract.storage.unions.length, 4);
+    const expandedCoverage = expandedFixtureCoverage(manifest, contract);
     const models = defineModels(definition);
     const schemas = buildSchemas(Object.values(models));
-    assert.equal(schemas.length, 8);
+    assert.equal(schemas.length, 17);
     const properties = new Map(definition.models.map((model: any) => [model.tableName, model.properties]));
     for (const family of contract.storage.unions) {
         assert.deepEqual([...manifest.unionCaseCoverage[family.name]].sort(), family.cases.map((item: any) => item.name).sort());
@@ -37,7 +103,7 @@ export function prepareNativeHUDInterop(manifest: any, contract: any) {
         const values = mutation.values.map((cell: Cell) => property.kind === 'union' ? mutationUnion(cell, property) : scalar(cell, property.type));
         return { ...mutation, values };
     });
-    return { definition, models, schemas, mutations };
+    return { definition, models, schemas, mutations, expandedCoverage };
 }
 
 export async function runNativeHUDInterop({ module, manifest, contract, filePath, inspectJunctions }: any) {
@@ -63,7 +129,7 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
         // This excludes the Vite public-open loader and browser OPFS lifecycle.
         const db = Object.assign(Object.create(Lattice.prototype), { db: native }) as Lattice;
         const verify = async (snapshot: any, stage: string) => {
-            let typedCells = 0, physicalCells = 0, unionValues = 0;
+            let typedCells = 0, physicalCells = 0, unionValues = 0, blobCells = 0;
             const typedByIdentity = new Map<string, any>();
             for (const model of prepared.definition.models) {
                 const rows = (await db.objectsArray((prepared.models as any)[model.tableName])).map(own);
@@ -88,7 +154,10 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
                                 own(value); assert.equal(cell.kind, 'link'); assert.equal(prop.targetTable, cell.table);
                                 assert.equal(value.id, rowID(cell.localId), label); assert.equal(value.globalId, cell.globalId, label);
                             }
-                        } else assertScalar(value, cell, prop.type, label);
+                        } else {
+                            assertScalar(value, cell, prop.type, label);
+                            if (cell.kind === 'blob') ++blobCells;
+                        }
                         ++typedCells;
                     }
                 }
@@ -121,8 +190,8 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
                             assert.equal(linked.getString('globalId'), cell.globalId, label);
                         } else if (cell.kind === 'unionRef') assert.equal(object.getString(name), cell.value, label);
                         else {
-                            const type = cell.kind === 'int64' ? 'int' : ['float64', 'unixSeconds'].includes(cell.kind) ? 'float' : 'string';
-                            const value = type === 'int' ? object.getInt(name) : type === 'float' ? object.getDouble(name) : object.getString(name);
+                            const type = cell.kind === 'blob' ? 'blob' : cell.kind === 'int64' ? 'int' : ['float64', 'unixSeconds'].includes(cell.kind) ? 'float' : 'string';
+                            const value = type === 'blob' ? object.getData(name) : type === 'int' ? object.getInt(name) : type === 'float' ? object.getDouble(name) : object.getString(name);
                             assertScalar(value, cell, type, label);
                         }
                         ++physicalCells;
@@ -133,8 +202,10 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
             assert.equal(typeof inspectJunctions, "function", "Physical side tables require test-only inspection");
             native.walCheckpoint();
             const sideTableInspection = await inspectJunctions({ stage, snapshot, tables: sideTables, filePath });
-            reports.push({ stage, modelTables: 8, unionFamilies: 4, nativeManagedTables: tables.length,
-                rows: snapshot.rows.length, typedCells, physicalCells, unionValues, sideTableInspection, exactPhysicalRows: true });
+            assert.ok(blobCells > 0, 'Expanded fixture must exercise actual typed BLOB cells');
+            reports.push({ stage, modelTables: prepared.definition.models.length, unionFamilies: contract.storage.unions.length,
+                nativeManagedTables: tables.length, rows: snapshot.rows.length, typedCells, physicalCells, unionValues,
+                blobCells, sideTableInspection, exactPhysicalRows: true });
             return typedByIdentity;
         };
         const rows = await verify(manifest.baseline, 'baseline');
@@ -149,6 +220,9 @@ export async function runNativeHUDInterop({ module, manifest, contract, filePath
         await verify(manifest.expectedReturned, 'returned');
         native.walCheckpoint();
         return { reports, mutations: prepared.mutations.length,
+            fixtureFormat: 2, expandedCoverage: prepared.expandedCoverage,
+            expandedImmutableTables: immutableExpandedTables, expandedReferenceTombstones: 2,
+            blobEncoding: 'lowercase hex; exact Uint8Array bytes; empty BLOB is distinct from NULL',
             unionCodableJSONParsedForEquality: false, rowIdentityPolicy: 'checked safe number; value Int64 remains BigInt',
             descriptorsUnmodified: true, noHistoryLiveValuesChecked: true,
             auditHistoryOracle: 'pending separate Swift read-only verifier', publicOpenLoaderCovered: false,

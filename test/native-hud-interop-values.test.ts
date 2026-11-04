@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { localdevPaths, nativeInvocationQualification, nativeSourcePrefix } from './fixtures/native-hud-interop-inputs.mjs';
 import { assertScalar, doubleBits, expectedUnion, fromDoubleBits, integer, mutationUnion, rowID, scalar } from './fixtures/native-hud-interop-values';
 
 describe('native HUD oracle exact value transport', () => {
@@ -52,5 +55,87 @@ describe('native HUD oracle exact value transport', () => {
             .toEqual({ case: 'setProp', fields: { value: '9007199254740993' } });
         expect(() => mutationUnion({ kind: 'unionCodableJSON', value: '{"claim":{"ttlMs":9223372036854775807}}' }, property)).toThrow(/exact JSON decoder/);
         expect(() => mutationUnion({ kind: 'unionCodableJSON', value: '{"setProp":{"value":3}}' }, property)).toThrow();
+    });
+});
+
+
+describe('native HUD current invocation input admission', () => {
+    const binding = () => ({
+        admission: { bytes: 10, sha256: '1'.repeat(64) },
+        baseline: { bytes: 20, sha256: '2'.repeat(64) },
+        fixtureContract: { bytes: 30, sha256: '3'.repeat(64) },
+        manifest: { bytes: 40, sha256: '4'.repeat(64) },
+        nativeReference: { bytes: 50, sha256: '5'.repeat(64) },
+        producerSource: { bytes: 60, sha256: '6'.repeat(64) },
+        sourceReceipt: { bytes: 70, sha256: '7'.repeat(64) },
+        callerRecordedSourceCommit: 'a'.repeat(40),
+        dependencyAdmissionSHA256: 'b'.repeat(64),
+        sourceLayout: 'direct-checkout',
+    });
+    it('admits only a closed complete actual binding in either explicit source layout', () => {
+        for (const sourceLayout of ['direct-checkout', 'q2-copied-source']) {
+            const input = { ...binding(), sourceLayout };
+            const admitted = nativeInvocationQualification(input);
+            expect(admitted).toEqual(input);
+            expect(Object.isFrozen(admitted)).toBe(true);
+            expect(Object.isFrozen(admitted.baseline)).toBe(true);
+        }
+        for (const value of [null, [], {}, { ...binding(), extra: true }, { ...binding(), sourceLayout: 'guess' }]) {
+            expect(() => nativeInvocationQualification(value)).toThrow();
+        }
+        for (const key of Object.keys(binding())) {
+            const input: Record<string, unknown> = binding();
+            delete input[key];
+            expect(() => nativeInvocationQualification(input)).toThrow();
+        }
+        for (const key of ['admission', 'baseline', 'fixtureContract', 'manifest', 'nativeReference', 'producerSource', 'sourceReceipt']) {
+            for (const pin of [null, { bytes: 0, sha256: '1'.repeat(64) }, { bytes: 1.5, sha256: '1'.repeat(64) },
+                { bytes: 1, sha256: 'wrong' }, { bytes: 1, sha256: '1'.repeat(64), path: '/unbound' }]) {
+                expect(() => nativeInvocationQualification({ ...binding(), [key]: pin })).toThrow();
+            }
+        }
+        expect(() => nativeInvocationQualification({ ...binding(), callerRecordedSourceCommit: 'a'.repeat(39) })).toThrow();
+        expect(() => nativeInvocationQualification({ ...binding(), dependencyAdmissionSHA256: null })).toThrow();
+    });
+    it('keeps direct and Q2 roots and exact admitted row prefixes distinct', () => {
+        const native = '/fixture/localdev/qualification/Sources/HUD';
+        const identity = (value: string) => value;
+        const direct = { version: 1, root: native };
+        const q2 = { version: 1, root: '/fixture/localdev/qualification' };
+        expect(nativeSourcePrefix(direct, native, 'direct-checkout', identity)).toBe('');
+        expect(nativeSourcePrefix(q2, native, 'q2-copied-source', identity)).toBe('Sources/HUD/');
+        expect(() => nativeSourcePrefix(direct, native, 'q2-copied-source', identity)).toThrow();
+        expect(() => nativeSourcePrefix(q2, native, 'direct-checkout', identity)).toThrow();
+        expect(() => nativeSourcePrefix({ ...q2, version: 2 }, native, 'q2-copied-source', identity)).toThrow();
+        expect(() => nativeSourcePrefix(q2, native, 'guess', identity)).toThrow();
+    });
+    it('admits existing and fresh child paths but refuses traversal, siblings and symlink escapes', () => {
+        const home = process.env.HOME!;
+        const owner = path.join(home, 'localdev');
+        fs.mkdirSync(owner, { recursive: true });
+        const scratch = fs.mkdtempSync(path.join(owner, 'native17-input-test-'));
+        try {
+            const testHome = path.join(scratch, 'home');
+            const root = path.join(testHome, 'localdev');
+            const outside = path.join(scratch, 'outside');
+            fs.mkdirSync(root, { recursive: true });
+            fs.mkdirSync(outside);
+            const file = path.join(root, 'input');
+            fs.writeFileSync(file, 'synthetic input', { flag: 'wx' });
+            fs.symlinkSync(outside, path.join(root, 'escape'), 'dir');
+            const admitted = localdevPaths(testHome);
+            expect(admitted(file)).toBe(fs.realpathSync(file));
+            expect(admitted(path.join(root, 'fresh-output'), false)).toBe(path.join(fs.realpathSync(root), 'fresh-output'));
+            for (const refused of [root, outside, path.join(root, '..', '..', 'outside'), path.join(root, 'escape')]) {
+                expect(() => admitted(refused)).toThrow();
+            }
+            expect(() => admitted(path.join(root, 'escape', 'new-output'), false)).toThrow();
+            expect(() => admitted(root + '-other/new-output', false)).toThrow();
+            expect(() => admitted('relative')).toThrow();
+            expect(() => localdevPaths('relative')).toThrow();
+            expect(() => localdevPaths('')).toThrow();
+        } finally {
+            fs.rmSync(scratch, { recursive: true, force: true });
+        }
     });
 });
