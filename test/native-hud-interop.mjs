@@ -128,6 +128,14 @@ const NATIVE17_FIXED_DEPENDENCY_PINS = Object.freeze({
     "latticecore": "revision@c089b94a53f52eda843e9c1480b9c1c79f3921ef",
     "swift-sdk": "revision@82951cc9cd05de216e8dd6425f951ce31d76fa0a"
 });
+// Exact current Native owner graph at8b2c; independent of the retained c089 Wasm pair.
+const NATIVE17_CURRENT_DEPENDENCY_PINS = Object.freeze({
+    "profile": "hud-native17-sdk6c6-core2d-v1",
+    "remoteLockSHA256": "7f67c05fd3b9ed51c678156cf6124e147cddef3faa769432608201049ae41676",
+    "lattice": "revision@6c6e1c120562861a2e26d44f114e963c0209bacd",
+    "latticecore": "revision@2d693dcf4f14a32699e02d901480312e3d90cdb4",
+    "swift-sdk": "revision@82951cc9cd05de216e8dd6425f951ce31d76fa0a"
+});
 // Actual invocation data, recorded after native generation; this does not grant execution.
 // The original prepared consumer's null pins remain preserved in its source packet.
 const invocationBinding = describe(args.get('--native-qualification'));
@@ -200,11 +208,14 @@ function native17Profile(value, exportedContract) {
     assert.equal(admitted.sourceReceiptSHA256, sourceReceipt.sha256);
     assert.match(qualified.dependencyAdmissionSHA256 ?? '', /^[a-f0-9]{64}$/, 'Native17 dependency admission is unbound');
     assert.equal(admitted.dependencies.sha256, qualified.dependencyAdmissionSHA256);
-    assert.deepEqual(value.nativeDependencyPins, NATIVE17_FIXED_DEPENDENCY_PINS,
+    const dependencyPins = [NATIVE17_FIXED_DEPENDENCY_PINS, NATIVE17_CURRENT_DEPENDENCY_PINS]
+        .find(profile => profile.profile === value.nativeDependencyPins?.profile);
+    assert.ok(dependencyPins, 'Native17 dependency profile is not admitted');
+    assert.deepEqual(value.nativeDependencyPins, dependencyPins,
         'Native17 current dependency field set or values differ');
     assert.equal(Object.keys(value.nativeDependencyPins).length, 5);
     const lock = describe(path.join(nativeHUD, 'Package.resolved'));
-    assert.equal(lock.sha256, NATIVE17_FIXED_DEPENDENCY_PINS.remoteLockSHA256);
+    assert.equal(lock.sha256, dependencyPins.remoteLockSHA256);
     assert.equal(value.packageResolvedSHA256, lock.sha256);
     assert.deepEqual(Object.keys(value.sourceFileSHA256).sort(), [...NATIVE17_SOURCE_PATHS, 'producerSource'].sort());
     assert.ok(Array.isArray(source.inputs), 'Native source receipt has no input rows');
