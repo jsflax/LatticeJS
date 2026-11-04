@@ -1,5 +1,6 @@
 // TypeScript decorators for LatticeJS model definitions
 import 'reflect-metadata';
+import { checkedRowId, isExplicitModel, readExplicitScalar, readExplicitUnion, copyExplicitUnion, validateExplicitValue } from './explicit-values';
 import {
     ColumnType,
     PropertyDescriptor,
@@ -348,7 +349,7 @@ function isNumericEnum(enumObj: Record<string, string | number>): boolean {
 // Unique Constraint Metadata
 // ============================================================================
 
-const LATTICE_CONSTRAINTS = Symbol('lattice:constraints');
+export const LATTICE_CONSTRAINTS = Symbol('lattice:constraints');
 
 /**
  * Apply a unique constraint to a single property.
@@ -629,7 +630,7 @@ function transformModelClass<T extends ModelConstructor>(target: T, tableName: s
 /**
  * Define getter/setter for a property that uses C++ storage.
  */
-function definePropertyAccessor(prototype: any, schema: PropertySchema): void {
+export function definePropertyAccessor(prototype: any, schema: PropertySchema): void {
     Object.defineProperty(prototype, schema.name, {
         get() {
             return getPropertyValue(this, schema.name, schema);
@@ -647,7 +648,10 @@ function definePropertyAccessor(prototype: any, schema: PropertySchema): void {
  */
 function getPropertyValue(instance: any, name: string, schema: PropertySchema): any {
     const dynObj = instance[DYNAMIC_OBJECT];
+    if (schema.explicit && !dynObj) throw new Error(`Missing native backing for ${name}`);
     if (!dynObj) return schema.defaultValue;
+    if (schema.explicit && schema.kind === 'union') return readExplicitUnion(dynObj, name, schema);
+    if (schema.explicit && schema.kind === 'primitive') return readExplicitScalar(dynObj, name, schema);
 
     // Handle embedded model — deserialize JSON
     if (schema.embeddedClass) {
@@ -681,9 +685,17 @@ function getPropertyValue(instance: any, name: string, schema: PropertySchema): 
 
     // Handle link properties - use getObject to get linked DynamicObject
     if (schema.kind === 'link') {
+        if (schema.explicit && !dynObj.hasValue(name)) {
+            if (schema.nullable) return null;
+            throw new TypeError(`Missing required stored link: ${name}`);
+        }
         // Get linked object directly from C++
         const linkedDynObj = dynObj.getObject(name);
         if (!linkedDynObj || !linkedDynObj.isValid()) {
+            if (schema.explicit) {
+                linkedDynObj?.delete?.();
+                throw new Error(`Cannot hydrate stored link: ${name}`);
+            }
             console.log("invalid link")
             return null;
         }
@@ -691,13 +703,13 @@ function getPropertyValue(instance: any, name: string, schema: PropertySchema): 
         // Get the target model and lattice reference
         const targetModel = schema.targetModel;
         const lattice = instance[LATTICE_REF];
-        if (!targetModel || !lattice) {
+        if (!targetModel || (!lattice && !schema.explicit)) {
             console.log("no target model")
             return null;
         }
 
         // Create a model instance with the linked DynamicObject as backing
-        console.log("AHHH HYDRATING");
+        if (!schema.explicit) console.log("AHHH HYDRATING");
         const linkedInstance = hydrateInstance(targetModel, linkedDynObj, lattice);
 
         return linkedInstance;
@@ -770,8 +782,16 @@ function getPropertyValue(instance: any, name: string, schema: PropertySchema): 
  * Set a property value in C++ storage.
  */
 function setPropertyValue(instance: any, name: string, value: any, schema: PropertySchema): void {
+    if (schema.explicit) validateExplicitValue(schema, value);
     const dynObj = instance[DYNAMIC_OBJECT];
+    if (schema.explicit && !dynObj) throw new Error(`Missing native backing for ${name}`);
     if (!dynObj) return;
+
+    if (schema.explicit && schema.kind === 'union') {
+        if (typeof dynObj.setUnion !== 'function') throw new Error('Native setUnion capability required');
+        dynObj.setUnion(name, copyExplicitUnion(schema, value));
+        return;
+    }
 
     if (value === null || value === undefined) {
         dynObj.setNil(name);
@@ -810,7 +830,7 @@ function setPropertyValue(instance: any, name: string, value: any, schema: Prope
 
     // Handle link properties - use setObject with linked DynamicObject
     if (schema.kind === 'link') {
-        console.log('setting link: ' + value);
+        if (!schema.explicit) console.log('setting link: ' + value);
         dynObj.setObject(name, value[DYNAMIC_OBJECT]);
         return;
     }
@@ -904,11 +924,13 @@ export function extractSchema(modelClass: ModelConstructor, allModels: Set<Model
         name: ps.name,
         type: ps.type,
         kind: ps.kind,
-        targetTable: ps.targetModel ? getTableName(ps.targetModel) : undefined,
+        targetTable: ps.kind === 'union' ? ps.targetTable : ps.targetModel ? getTableName(ps.targetModel) : undefined,
         nullable: ps.nullable ?? (ps.kind !== 'primitive'),
         isVector: ps.isVector,
         isFullText: ps.isFullText,
         isIndexed: ps.isIndexed,
+        ...(Object.hasOwn(ps, 'noHistory') ? { noHistory: ps.noHistory } : {}),
+        ...(ps.kind === 'union' ? { logicalNullable: ps.logicalNullable, unionCases: ps.unionCases } : {}),
     }));
 
     // Get constraints from metadata
@@ -1089,10 +1111,16 @@ export function hydrateInstance<T>(
     instance[LATTICE_REF] = lattice;
 
     
-    // Define id and globalId getters that read from C++
+    defineModelIdentity(instance, dynObj, isExplicitModel(modelClass));
+    return instance;
+}
+
+/** Shared identity access for constructor-free hydration and explicit creation. */
+export function defineModelIdentity(instance: any, dynObj: any, explicit: boolean): void {
     Object.defineProperty(instance, 'id', {
         get() {
             const id = dynObj.getInt('id');
+            if (explicit) return id === 0 || id === 0n ? undefined : checkedRowId(id);
             return id ? Number(id) : undefined;
         },
         enumerable: true,
@@ -1105,6 +1133,4 @@ export function hydrateInstance<T>(
         enumerable: true,
         configurable: true,
     });
-
-    return instance;
 }

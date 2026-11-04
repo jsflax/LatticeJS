@@ -109,6 +109,16 @@ class FakeStore {
         return JSON.stringify(this.log);
     }
 
+    // Safe-number fixture only: the actual Core pending-import guard and exact
+    // wire codec are qualified separately by the rebuilt-Wasm harness.
+    importPendingFrame(json: string) {
+        const entries = JSON.parse(json) as AuditRow[];
+        const alreadyPresent = entries.filter(entry => this.log.some(row => row.globalId === entry.globalId)).map(entry => entry.globalId);
+        const pending = entries.filter(entry => !alreadyPresent.includes(entry.globalId));
+        const imported = pending.length ? JSON.parse(this.applyRemoteChanges(JSON.stringify(pending))) as string[] : [];
+        return { imported, alreadyPresent, rejected: pending.map(entry => entry.globalId).filter(id => !imported.includes(id)) };
+    }
+
     applyRemoteChanges(entriesJson: string): string {
         this.applyCalls++;
         const entries = JSON.parse(entriesJson) as AuditRow[];

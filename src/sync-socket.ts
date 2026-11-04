@@ -45,6 +45,8 @@ export class InstanceSyncState {
         });
     }
 
+    get state(): SyncStateInfo { return this.current; }
+
     subscribe(callback: ((info: SyncStateInfo) => void) | null): () => void {
         if (callback === null) {
             this.listeners.clear();
@@ -253,9 +255,9 @@ export function forgetSyncSockets(sockets: readonly TrackedSyncSocket[]): void {
 
 /** Observe native-initiated disconnect without touching shared transport handlers. */
 export function waitForSyncSocketsClosed(
-    sockets: readonly TrackedSyncSocket[], timeoutMs: number,
+    sockets: readonly TrackedSyncSocket[], timeoutMs: number, signal?: AbortSignal,
 ): Promise<LatticeCloseResult['transport']> {
-    if (!sockets.length) return Promise.resolve('unavailable');
+    if (!sockets.length || signal?.aborted) return Promise.resolve('unavailable');
     return new Promise(resolve => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let settled = false;
@@ -271,11 +273,15 @@ export function waitForSyncSocketsClosed(
         const check = () => {
             if (sockets.every(socket => completed.has(socket) || socket.readyState === CLOSED)) finish('closed');
         };
+        const stop = () => finish('unavailable');
+        signal?.addEventListener('abort', stop, { once: true });
+        cleanups.push(() => signal?.removeEventListener('abort', stop));
         for (const socket of sockets) {
+            if (settled) break;
             const onClose = () => { completed.add(socket); check(); };
+            cleanups.push(() => socket.removeEventListener('close', onClose));
             try {
                 socket.addEventListener?.('close', onClose);
-                cleanups.push(() => socket.removeEventListener('close', onClose));
             } catch { /* Ready state still supports an already-closed transport. */ }
         }
         check();
